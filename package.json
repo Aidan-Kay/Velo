@@ -1,0 +1,63 @@
+{
+  "name": "vinted-manager",
+  "version": "1.0.0",
+  "description": "Vinted Manager — account management tool for Vinted sellers",
+  "main": "dist/main.js",
+  "scripts": {
+    "start": "npm run build && npx electron .",
+    "dev": "npm run build && npx electron .",
+    "build": "npm run build:css && npm run build:main && npm run build:preload && npm run build:renderer",
+    "build:css": "npx @tailwindcss/cli -i ./src/renderer/styles/input.css -o ./src/renderer/styles/style.css",
+    "build:main": "node esbuild.config.mjs main",
+    "build:preload": "node esbuild.config.mjs preload",
+    "build:renderer": "node esbuild.config.mjs renderer",
+    "build:win": "npm run build && npx electron-builder --win --publish never",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@heroicons/react": "^2.2.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
+    "electron-log": "^5.4.3",
+    "lucide-react": "^0.577.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-to-printer": "^5.7.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "shadcn": "^4.0.5",
+    "tailwind-merge": "^3.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "electron": "^29.0.0",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.20.0",
+    "tailwindcss": "^4.2.1",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "^5.4.0"
+  },
+  "build": {
+    "appId": "com.vintedmanager.app",
+    "productName": "VintedManager",
+    "files": [
+      "dist/**/*",
+      "src/renderer/index.html",
+      "src/renderer/styles/style.css",
+      "assets/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "portable",
+      "icon": "assets/icon.ico"
+    }
+  }
+}
