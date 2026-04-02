@@ -385,6 +385,11 @@ export class VintedClient {
         const data = JSON.parse(result.body) as T;
         return { status: result.status, data };
       } catch (err) {
+        // Network errors (e.g. after sleep) require a fresh window
+        if (this._isNetworkError(err as Error)) {
+          console.log(`[vinted] Network error on attempt ${tried}/${this._maxRetries} — recreating window`);
+          this.resetWindow();
+        }
         if (isLast || !isTransientError(err as Error)) throw err;
 
         const delay = this._retryBaseDelay * Math.pow(2, tried - 1);
@@ -498,6 +503,10 @@ export class VintedClient {
         const data = result.body ? (JSON.parse(result.body) as T) : (null as T);
         return { status: result.status, data };
       } catch (err) {
+        if (this._isNetworkError(err as Error)) {
+          console.log(`[vinted] Network error on file upload attempt ${tried}/${this._maxRetries} — recreating window`);
+          this.resetWindow();
+        }
         if (isLast || !isTransientError(err as Error)) throw err;
 
         const delay = this._retryBaseDelay * Math.pow(2, tried - 1);
@@ -596,6 +605,10 @@ export class VintedClient {
         const data = result.body ? (JSON.parse(result.body) as T) : (null as T);
         return { status: result.status, data };
       } catch (err) {
+        if (this._isNetworkError(err as Error)) {
+          console.log(`[vinted] Network error on ${method} attempt ${tried}/${this._maxRetries} — recreating window`);
+          this.resetWindow();
+        }
         if (isLast || !isTransientError(err as Error)) throw err;
 
         const delay = this._retryBaseDelay * Math.pow(2, tried - 1);
@@ -690,15 +703,41 @@ export class VintedClient {
     this._win = null;
     this._windowReady = false;
   }
+
+  /** Invalidate the hidden window so the next request creates a fresh one. */
+  resetWindow(): void {
+    console.log("[vinted] Resetting hidden browser window");
+    this.destroy();
+    this._csrfToken = null;
+  }
+
+  /** Check if an error indicates a broken network context (e.g. after sleep). */
+  private _isNetworkError(err: Error): boolean {
+    const msg = err.message || "";
+    return msg.includes("Failed to fetch") || msg.includes("net::ERR_");
+  }
 }
 
 // ─── Singleton Client ─────────────────────────────────────────────────────────
 
 let _client: VintedClient | null = null;
 let _activeProxy: string | null = null;
+let _inFlightCount = 0;
+
+/** Track in-flight requests to prevent domain switch during active requests. */
+export function trackRequest<T>(fn: () => Promise<T>): Promise<T> {
+  _inFlightCount++;
+  return fn().finally(() => {
+    _inFlightCount--;
+  });
+}
 
 export function getClient(domain = "www.vinted.co.uk"): VintedClient {
   if (!_client || _client.domain !== domain) {
+    if (_client && _inFlightCount > 0) {
+      console.warn(`[vinted] Domain switch requested while ${_inFlightCount} request(s) in flight — reusing current client`);
+      return _client;
+    }
     if (_client) _client.destroy();
     _client = new VintedClient(domain, _activeProxy);
   }
@@ -712,4 +751,11 @@ export function configureClientProxy(proxyUrl: string | null): void {
     _client = null;
   }
   console.log(_activeProxy ? `[vinted] Proxy configured: ${_activeProxy}` : "[vinted] Proxy cleared");
+}
+
+/** Reset the hidden browser window so the next request creates a fresh one. */
+export function resetClientWindow(): void {
+  if (_client) {
+    _client.resetWindow();
+  }
 }

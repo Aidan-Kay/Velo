@@ -4,6 +4,60 @@ import { getClient } from "./lib/requester";
 
 const VINTED_API = "/api/v2";
 
+// ─── Label Options ──────────────────────────────────────────────────────────
+
+export interface LabelOption {
+  type: string;
+  name: string | null;
+  label_types: string[];
+}
+
+export interface ShipmentLabelOptions {
+  carrier_name: string;
+  label_types: string[];
+}
+
+/**
+ * Fetch available label options for a shipment.
+ * Returns the carrier name and a deduplicated list of available label types (e.g. ["digital", "printable"]).
+ */
+export async function getShipmentLabelOptions(shipmentId: number, domain?: string): Promise<ShipmentLabelOptions> {
+  const client = getClient(domain || DEFAULT_DOMAIN);
+  const apiUrl = `https://${client.domain}${VINTED_API}/shipments/${shipmentId}/label_options?drop_off_rewrite=true`;
+
+  console.log(`[vinted] Fetching label options for shipment ${shipmentId}...`);
+  const response = await client.get<{
+    label_options?: {
+      carrier?: { name?: string };
+      drop_offs?: Array<{
+        options?: LabelOption[];
+      }>;
+    };
+  }>(apiUrl);
+
+  if (response.status !== 200) {
+    throw new Error(`Failed to fetch label options (status ${response.status})`);
+  }
+
+  const opts = response.data?.label_options;
+  const carrierName = opts?.carrier?.name ?? "";
+
+  // Collect all unique label types from all drop-off options
+  const labelTypes = new Set<string>();
+  for (const dropOff of opts?.drop_offs ?? []) {
+    for (const option of dropOff.options ?? []) {
+      for (const lt of option.label_types ?? []) {
+        labelTypes.add(lt);
+      }
+    }
+  }
+
+  return {
+    carrier_name: carrierName,
+    label_types: Array.from(labelTypes),
+  };
+}
+
 // ─── Shipping ───────────────────────────────────────────────────────────────
 
 export async function getShippingInstructions(transactionId: number, domain?: string): Promise<unknown> {

@@ -20,6 +20,7 @@ import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Input } from "../components/ui/input";
+import { Switch } from "../components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { useListingSync } from "../context/ListingSyncContext";
 import { runBulkOperation } from "../hooks/useBulkOperation";
@@ -67,6 +68,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
   const [publishingItem, setPublishingItem] = useState<string | null>(null);
   const { sortColumn, sortDirection, handleSort } = useTableSort<SortColumn>("title");
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [hideOutOfStock, setHideOutOfStock] = useState(false);
   const [confirmDeleteItem, setConfirmDeleteItem] = useState<LocalItem | null>(null);
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const cancelledRef = useRef(false);
@@ -107,6 +109,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
   // ─── Filter & Sort ─────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     const result = items.filter((item) => {
+      if (hideOutOfStock && item.stock <= 0) return false;
       if (statusFilter.length > 0 && !statusFilter.includes(getListingStatus(item))) return false;
       if (!search) return true;
       const q = search.toLowerCase();
@@ -136,7 +139,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     });
 
     return result;
-  }, [items, search, statusFilter, sortColumn, sortDirection, listingMap]);
+  }, [items, search, statusFilter, hideOutOfStock, sortColumn, sortDirection, listingMap]);
 
   // ─── CRUD ───────────────────────────────────────────────────────────────
 
@@ -201,6 +204,16 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     }
   };
 
+  // ─── Toggle relisting ─────────────────────────────────────────────────
+  const handleToggleRelisting = async (item: LocalItem, enabled: boolean) => {
+    try {
+      const saved = await window.api.saveItem({ ...item, relistingEnabled: enabled });
+      setItems((prev) => prev.map((i) => (i.id === saved.id ? saved : i)));
+    } catch {
+      addToast("Failed to update relisting setting", "error");
+    }
+  };
+
   // ─── List individual item ──────────────────────────────────────────────
   const handleListItem = async (item: LocalItem, asDraft = false) => {
     if (!loggedIn) {
@@ -208,7 +221,27 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
       return;
     }
     setListingItem(item.id);
-    addToast(asDraft ? "Listing as draft…" : "Listing on Vinted…", "info");
+
+    const photoCount = item.photos?.length ?? 0;
+    const totalSteps = photoCount + 1 + (asDraft ? 0 : 1);
+
+    setProgress({
+      title: asDraft ? "Listing as Draft" : "Listing on Vinted",
+      total: 1,
+      completed: 0,
+      failed: 0,
+      currentTitle: item.title,
+      currentAction: asDraft ? "Creating draft listing…" : "Creating listing…",
+      done: false,
+      itemStep: 1,
+      itemStepTotal: totalSteps,
+    });
+
+    // Listen for per-photo progress from the main process
+    const cleanup = window.api.onListingCreationProgress(({ step, current }) => {
+      setProgress((p) => (p ? { ...p, itemStep: current, itemStepTotal: totalSteps, currentAction: step + "…" } : p));
+    });
+
     try {
       const result = await window.api.createListing(item, { asDraft });
       const created = result as Record<string, unknown>;
@@ -216,15 +249,15 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
       const vintedId = (vintedItem.id as number) || 0;
 
       // Optimistic update — show the new status immediately
-      const titleKey = item.title.toLowerCase().trim();
       patchListingMap(item.title, { status: asDraft ? "Draft" : "Active", id: vintedId });
       setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, updatedAt: new Date().toISOString() } : i)));
-      addToast(asDraft ? "Listed as draft" : "Listed on Vinted", "success");
+      setProgress((p) => (p ? { ...p, completed: 1, done: true, currentAction: asDraft ? "Listed as draft" : "Listed on Vinted" } : p));
       // Refresh so Listings page picks up the new listing
       refreshListings().catch(() => {});
-    } catch {
-      addToast("Failed to list item", "error");
+    } catch (err) {
+      setProgress((p) => (p ? { ...p, failed: 1, done: true, currentAction: `Failed: ${(err as Error).message}` } : p));
     } finally {
+      cleanup();
       setListingItem(null);
     }
   };
@@ -269,7 +302,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     if (selected.size === filtered.length) {
       setSelected(new Set());
     } else {
-      setSelected(new Set(filtered.map((i) => i.id)));
+      setSelected(new Set(filtered.map((item) => item.id)));
     }
   };
 
@@ -340,28 +373,34 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
         onStatusChange={setStatusFilter}
         statusAllLabel="All statuses"
         actions={
-          selected.size > 0 ? (
-            <div className="flex items-center gap-2">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" disabled={bulkListing || !loggedIn}>
-                    Bulk Actions
-                    <ChevronDownIcon className="w-4 h-4 ml-1" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem onClick={() => handleBulkList(false)} disabled={bulkListing || !loggedIn}>
-                    <ArrowUpTrayIcon className="w-4 h-4" />
-                    Bulk List
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleBulkList(true)} disabled={bulkListing || !loggedIn}>
-                    <DocumentDuplicateIcon className="w-4 h-4" />
-                    List as Draft
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          ) : undefined
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none whitespace-nowrap">
+              <Checkbox checked={hideOutOfStock} onCheckedChange={(checked) => setHideOutOfStock(checked === true)} />
+              Hide out of stock
+            </label>
+            {selected.size > 0 && (
+              <div className="flex items-center gap-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm" disabled={bulkListing || !loggedIn}>
+                      Bulk Actions
+                      <ChevronDownIcon className="w-4 h-4 ml-1" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => handleBulkList(false)} disabled={bulkListing || !loggedIn}>
+                      <ArrowUpTrayIcon className="w-4 h-4" />
+                      Bulk List
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => handleBulkList(true)} disabled={bulkListing || !loggedIn}>
+                      <DocumentDuplicateIcon className="w-4 h-4" />
+                      List as Draft
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )}
+          </div>
         }
       />
 
@@ -392,6 +431,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
                     Price
                     <SortArrow column="price" sortColumn={sortColumn} sortDirection={sortDirection} />
                   </TableHead>
+                  <TableHead className="px-4 py-3">Relist</TableHead>
                   <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("stock")}>
                     Stock
                     <SortArrow column="stock" sortColumn={sortColumn} sortDirection={sortDirection} />
@@ -437,6 +477,14 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
                       {/* Price */}
                       <TableCell className="px-4 py-3 font-medium whitespace-nowrap">
                         {item.price} {item.currency}
+                      </TableCell>
+
+                      {/* Relist toggle */}
+                      <TableCell className="px-4 py-3">
+                        <Switch
+                          checked={item.relistingEnabled !== false}
+                          onCheckedChange={(checked) => handleToggleRelisting(item, checked)}
+                        />
                       </TableCell>
 
                       {/* Stock (inline editable) */}

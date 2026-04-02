@@ -1,9 +1,9 @@
 import { cn } from "@/lib/utils";
-import { ArchiveBoxIcon, Bars4Icon, Cog6ToothIcon, ShoppingCartIcon } from "@heroicons/react/20/solid";
+import { ArchiveBoxIcon, Bars4Icon, ChartBarIcon, Cog6ToothIcon, ShoppingCartIcon } from "@heroicons/react/20/solid";
 import React from "react";
 import { Button } from "./ui/button";
 
-type Page = "listings" | "items" | "orders" | "settings";
+type Page = "dashboard" | "listings" | "items" | "orders" | "settings";
 
 interface SidebarProps {
   currentPage: Page;
@@ -15,6 +15,11 @@ interface SidebarProps {
 }
 
 const navItems: { id: Page; label: string; icon: React.JSX.Element }[] = [
+  {
+    id: "dashboard",
+    label: "Dashboard",
+    icon: <ChartBarIcon className="w-5 h-5" />,
+  },
   {
     id: "listings",
     label: "Listings",

@@ -1,6 +1,6 @@
 import { XMarkIcon } from "@heroicons/react/20/solid";
 import React, { useCallback, useEffect, useState } from "react";
-import type { AppSettings, LabelPrinterSettings, PrinterInfo, RestockEntry } from "../../../shared/types";
+import type { AppSettings, LabelPrinterSettings, PrinterInfo, RelistEntry } from "../../../shared/types";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Input } from "../components/ui/input";
@@ -31,16 +31,16 @@ const VINTED_SITES: { value: string; label: string }[] = [
 
 const Settings: React.FC<SettingsProps> = ({ addToast }) => {
   const [settings, setSettings] = useState<AppSettings | null>(null);
-  const [restockQueue, setRestockQueue] = useState<RestockEntry[]>([]);
+  const [relistQueue, setRelistQueue] = useState<RelistEntry[]>([]);
   const [saving, setSaving] = useState(false);
   const [printers, setPrinters] = useState<PrinterInfo[]>([]);
   const [paperSizes, setPaperSizes] = useState<string[]>([]);
 
   const loadSettings = useCallback(async () => {
     try {
-      const [s, q] = await Promise.all([window.api.getSettings(), window.api.getRestockQueue()]);
+      const [s, q] = await Promise.all([window.api.getSettings(), window.api.getRelistQueue()]);
       setSettings(s);
-      setRestockQueue(q);
+      setRelistQueue(q);
     } catch {
       addToast("Failed to load settings", "error");
     }
@@ -87,11 +87,11 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
     }
   };
 
-  const removeRestock = async (itemId: string) => {
+  const removeRelist = async (itemId: string) => {
     try {
-      await window.api.removeFromRestockQueue(itemId);
-      setRestockQueue((prev) => prev.filter((r) => r.itemId !== itemId));
-      addToast("Removed from restock queue", "info");
+      await window.api.removeFromRelistQueue(itemId);
+      setRelistQueue((prev) => prev.filter((r) => r.itemId !== itemId));
+      addToast("Removed from relist queue", "info");
     } catch {
       addToast("Failed to remove from queue", "error");
     }
@@ -101,12 +101,12 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
     setSettings((prev) => (prev ? { ...prev, [key]: value } : prev));
   };
 
-  const updateRestocking = (key: keyof AppSettings["restocking"], value: boolean | number) => {
+  const updateRelisting = (key: keyof AppSettings["relisting"], value: boolean | number) => {
     setSettings((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
-        restocking: { ...prev.restocking, [key]: value },
+        relisting: { ...prev.relisting, [key]: value },
       };
     });
   };
@@ -180,19 +180,19 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
         </Select>
       </Card>
 
-      {/* ─── Restocking ─────────────────────────────────────────────────── */}
+      {/* ─── Relisting ───────────────────────────────────────────────────────── */}
       <Card className="p-5 space-y-4">
         <div>
-          <h3 className="text-base font-medium text-foreground">Automatic Restocking</h3>
+          <h3 className="text-base font-medium text-foreground">Automatic Relisting</h3>
           <p className="text-xs text-muted-foreground mt-0.5">Automatically relist items after they sell</p>
         </div>
 
         <div className="flex items-center justify-between">
           <div>
-            <span className="text-sm text-foreground">Enable restocking</span>
+            <span className="text-sm text-foreground">Enable relisting</span>
             <p className="text-xs text-muted-foreground">Automatically queue sold items for relisting</p>
           </div>
-          <Switch checked={settings.restocking.enabled} onCheckedChange={(checked) => updateRestocking("enabled", checked)} />
+          <Switch checked={settings.relisting.enabled} onCheckedChange={(checked) => updateRelisting("enabled", checked)} />
         </div>
 
         <div className="flex items-center justify-between">
@@ -200,7 +200,7 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
             <span className="text-sm text-foreground">List as draft</span>
             <p className="text-xs text-muted-foreground">Create listings as drafts instead of publishing immediately</p>
           </div>
-          <Switch checked={settings.restocking.listAsDraft} onCheckedChange={(checked) => updateRestocking("listAsDraft", checked)} />
+          <Switch checked={settings.relisting.listAsDraft} onCheckedChange={(checked) => updateRelisting("listAsDraft", checked)} />
         </div>
 
         <div className="space-y-1.5">
@@ -209,14 +209,67 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
             type="number"
             min="0"
             className="w-32"
-            value={settings.restocking.delayMinutes}
-            onChange={(e) => updateRestocking("delayMinutes", parseInt(e.target.value, 10) || 0)}
+            value={settings.relisting.delayMinutes}
+            onChange={(e) => updateRelisting("delayMinutes", parseInt(e.target.value, 10) || 0)}
           />
           <p className="text-xs text-muted-foreground">How long to wait after a sale before relisting (0 = immediate)</p>
         </div>
       </Card>
 
       {/* ─── Bulk Reposting ──────────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">Stock Management</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Control how item stock is managed when orders ship</p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm text-foreground">Reduce stock on shipped</span>
+            <p className="text-xs text-muted-foreground">
+              Automatically decrease an item's stock by 1 when an order reaches the "shipped" stage
+            </p>
+          </div>
+          <Switch checked={settings.reduceStockOnShipped} onCheckedChange={(checked) => updateSetting("reduceStockOnShipped", checked)} />
+        </div>
+      </Card>
+
+      {/* ─── Shipping Labels ─────────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">Shipping Labels</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Control how shipping labels are generated</p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm text-foreground">Auto-generate labels</span>
+            <p className="text-xs text-muted-foreground">Automatically generate shipping labels when new orders are detected</p>
+          </div>
+          <Switch checked={settings.autoGenerateLabels} onCheckedChange={(checked) => updateSetting("autoGenerateLabels", checked)} />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label>Preferred label type</Label>
+          <Select
+            value={settings.preferredLabelType}
+            onValueChange={(value) => updateSetting("preferredLabelType", value as "printable" | "digital")}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="printable">Printable</SelectItem>
+              <SelectItem value="digital">Digital</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            Preferred label format when generating. Falls back to whatever the courier provides if your preference isn't available.
+          </p>
+        </div>
+      </Card>
+
+      {/* ─── Bulk Operations ─────────────────────────────────────────────── */}
       <Card className="p-5 space-y-4">
         <div>
           <h3 className="text-base font-medium text-foreground">Bulk Operations</h3>
@@ -310,12 +363,12 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
         {saving ? "Saving…" : "Save Settings"}
       </Button>
 
-      {/* ─── Restock Queue ───────────────────────────────────────────────── */}
-      {restockQueue.length > 0 && (
+      {/* ─── Relist Queue ─────────────────────────────────────────────────────── */}
+      {relistQueue.length > 0 && (
         <section className="space-y-2">
-          <h3 className="text-sm font-medium text-foreground">Restock Queue</h3>
+          <h3 className="text-sm font-medium text-foreground">Relist Queue</h3>
           <div className="space-y-1">
-            {restockQueue.map((entry) => (
+            {relistQueue.map((entry) => (
               <Card key={entry.itemId} className="flex items-center gap-3 p-3">
                 <div className="flex-1 min-w-0">
                   <span className="text-sm text-foreground truncate block">{entry.itemTitle}</span>
@@ -330,7 +383,7 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
                       variant="ghost"
                       size="icon"
                       className="text-red-400 hover:text-red-300"
-                      onClick={() => removeRestock(entry.itemId)}
+                      onClick={() => removeRelist(entry.itemId)}
                     >
                       <XMarkIcon className="w-4 h-4" />
                     </Button>

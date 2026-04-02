@@ -34,6 +34,10 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
       addToast("Title is required", "error");
       return;
     }
+    if (item.price != null && item.price < 0) {
+      addToast("Price cannot be negative", "error");
+      return;
+    }
     onSave(item);
   };
 
@@ -59,7 +63,7 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
           <div className="space-y-1.5">
             <Label>Description</Label>
             <Textarea
-              className="h-24 resize-none"
+              className="h-36 resize-none"
               value={item.description ?? ""}
               onChange={(e) => updateField("description", e.target.value)}
               placeholder="Describe your item…"
@@ -75,7 +79,7 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
                 step="0.01"
                 min="0"
                 value={item.price ?? 0}
-                onChange={(e) => updateField("price", parseFloat(e.target.value) || 0)}
+                onChange={(e) => updateField("price", Math.max(0, parseFloat(e.target.value) || 0))}
               />
             </div>
             <div className="w-28 space-y-1.5">
@@ -84,7 +88,7 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
                 type="number"
                 min="0"
                 value={item.stock ?? 1}
-                onChange={(e) => updateField("stock", parseInt(e.target.value, 10) || 0)}
+                onChange={(e) => updateField("stock", Math.max(0, parseInt(e.target.value, 10) || 0))}
               />
             </div>
           </div>

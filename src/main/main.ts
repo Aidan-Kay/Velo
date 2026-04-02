@@ -1,9 +1,11 @@
-import { app, BrowserWindow, Menu, screen, Tray } from "electron";
+import { app, BrowserWindow, Menu, powerMonitor, screen, Tray } from "electron";
 import log from "electron-log/main";
+import * as fs from "fs";
 import * as path from "path";
 
 import type { AppSettings, LocalItem, Order, Pagination, VintedListing } from "../shared/types";
 import { setupIpc } from "./ipc-handlers";
+import { autoGenerateLabelsForNewOrders, reduceStockForShippedOrders } from "./order-automation";
 import {
   loadCachedListings,
   loadCachedOrders,
@@ -16,7 +18,7 @@ import {
   saveWindowState,
 } from "./persistence";
 import { PollingManager } from "./polling";
-import { initRestocking } from "./restocking";
+import { RelistingManager } from "./relisting";
 import { getDomain } from "./shared/constants";
 import * as vintedApi from "./vinted/api";
 
@@ -69,35 +71,6 @@ let isQuitting = false;
 
 // ─── Polling Manager ──────────────────────────────────────────────────────
 
-/** Reduce stock for local items matching newly detected orders. */
-function reduceStockForNewOrders(newOrders: Order[]): void {
-  let changed = false;
-  for (const order of newOrders) {
-    // Skip cancelled orders — they didn't result in a sale
-    if (order.orderStatus === "cancelled") continue;
-
-    const titlesToReduce: string[] = [];
-    if (order.isBundle && order.bundleItems.length > 0) {
-      titlesToReduce.push(...order.bundleItems.map((b) => b.title));
-    } else {
-      titlesToReduce.push(order.itemTitle);
-    }
-
-    for (const title of titlesToReduce) {
-      const titleKey = title.toLowerCase().trim();
-      const item = state.items.find((i) => i.title.toLowerCase().trim() === titleKey);
-      if (item && item.stock > 0) {
-        item.stock -= 1;
-        changed = true;
-        console.log(`[stock] Reduced stock for "${item.title}" to ${item.stock} (order ${order.transactionId})`);
-      }
-    }
-  }
-  if (changed) {
-    saveItems(state.items);
-  }
-}
-
 const polling = new PollingManager({
   getDomain: () => getDomain(settings.site),
   getCachedOrders: () => state.cachedOrders,
@@ -111,21 +84,22 @@ const polling = new PollingManager({
     }
   },
   onOrdersUpdated: (orders: Order[], pagination: Pagination) => {
-    // Detect truly new orders and reduce stock for matching local items
-    if (state.cachedOrders.length > 0) {
-      const existingTransactionIds = new Set(state.cachedOrders.map((o) => o.transactionId));
-      const newOrders = orders.filter((o) => o.transactionId && !existingTransactionIds.has(o.transactionId));
-      if (newOrders.length > 0) {
-        reduceStockForNewOrders(newOrders);
-      }
-    }
+    // Reduce stock for orders that have just reached the "shipped" stage
+    reduceStockForShippedOrders(orders, state.cachedOrders, settings, state.items);
 
-    // Preserve stockReplenished flags from cached orders
+    // Auto-generate shipping labels for new orders (runs async, doesn't block)
+    const cachedSnapshot = [...state.cachedOrders];
+    void autoGenerateLabelsForNewOrders(orders, cachedSnapshot, settings);
+
+    // Preserve stockReplenished and stockReduced flags from cached orders
     const cachedMap = new Map(state.cachedOrders.map((o) => [o.transactionId, o]));
     for (const order of orders) {
       const cached = order.transactionId ? cachedMap.get(order.transactionId) : null;
       if (cached?.stockReplenished) {
         order.stockReplenished = true;
+      }
+      if (cached?.stockReduced) {
+        order.stockReduced = true;
       }
     }
 
@@ -182,14 +156,35 @@ function createWindow(): void {
       height: 36,
     },
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
-    icon: path.join(__dirname, "../assets/icon.png"),
   });
 
-  mainWindow.loadFile(path.join(__dirname, "../src/renderer/index.html"));
+  // Set CSP header for production; skip in dev so Vite HMR works unimpeded
+  if (app.isPackaged) {
+    mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          "Content-Security-Policy": [
+            "default-src 'self';" +
+              " script-src 'self';" +
+              " style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;" +
+              " font-src https://fonts.gstatic.com;" +
+              " img-src 'self' file: data: https://*.vinted.co.uk https://*.vinted.fr https://*.vinted.de https://*.vinted.be https://*.vinted.es https://*.vinted.it https://*.vinted.nl https://*.vinted.pl https://*.vinted.com https://*.vinted.net;",
+          ],
+        },
+      });
+    });
+  }
+
+  if (!app.isPackaged && process.env["ELECTRON_RENDERER_URL"]) {
+    mainWindow.loadURL(process.env["ELECTRON_RENDERER_URL"]);
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+  }
 
   mainWindow.on("resized", () => {
     if (mainWindow) saveWindowState(mainWindow);
@@ -217,7 +212,11 @@ function createWindow(): void {
 // ─── Tray ─────────────────────────────────────────────────────────────────────
 
 function createTray(): void {
-  const iconPath = path.join(__dirname, "../assets/icon.png");
+  const iconPath = path.join(__dirname, "../../resources/icon.png");
+  if (!fs.existsSync(iconPath)) {
+    console.warn("[tray] Icon not found — skipping tray creation:", iconPath);
+    return;
+  }
   tray = new Tray(iconPath);
   tray.setToolTip("Vinted Manager");
 
@@ -259,26 +258,27 @@ function createTray(): void {
   });
 }
 
-// ─── Restocking Callback ──────────────────────────────────────────────────────
+// ─── Relisting ─────────────────────────────────────────────────────────────────────────
 
-async function handleRestock(itemId: string, asDraft: boolean): Promise<void> {
+async function handleRelist(itemId: string, asDraft: boolean): Promise<void> {
   const item = state.items.find((i) => i.id === itemId);
-  if (!item) throw new Error("Item not found for restocking");
+  if (!item) throw new Error("Item not found for relisting");
 
   const domain = getDomain(settings.site);
-
-  if (item.stock > 0) {
-    item.stock -= 1;
-  }
 
   await vintedApi.createListing(item, { asDraft, domain });
   item.updatedAt = new Date().toISOString();
   saveItems(state.items);
 
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send("item-restocked", { itemId, item });
+    mainWindow.webContents.send("item-relisted", { itemId, item });
   }
 }
+
+const relistingManager = new RelistingManager({
+  getSettings,
+  onRelist: handleRelist,
+});
 
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
@@ -294,11 +294,9 @@ app.whenReady().then(() => {
   state.cachedOrders = cachedOrders.orders;
   state.cachedOrdersPagination = cachedOrders.pagination;
 
-  setupIpc(state, getSettings, setSettings, getWindow, polling);
+  setupIpc(state, getSettings, setSettings, getWindow, polling, relistingManager);
   createWindow();
   createTray();
-
-  initRestocking(getSettings, handleRestock);
 
   // Auto-check session on startup
   const domain = getDomain(settings.site);
@@ -318,6 +316,30 @@ app.whenReady().then(() => {
     .catch((err: Error) => {
       console.warn("[main] Session check failed:", err.message);
     });
+
+  // Reset the hidden browser window after sleep so the next API call gets a fresh context
+  powerMonitor.on("resume", () => {
+    console.log("[main] System resumed from sleep — resetting Vinted client window");
+    vintedApi.resetClientWindow();
+
+    // Re-validate session — if still valid, polling will recover on its next tick;
+    // if not, notify the renderer so the user can re-login
+    const resumeDomain = getDomain(settings.site);
+    vintedApi
+      .checkSession(resumeDomain)
+      .then((result) => {
+        console.log(`[main] Post-resume session check: loggedIn=${result.loggedIn}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("session-status", result);
+        }
+        if (result.loggedIn) {
+          polling.start(); // idempotent — ensures polling is running
+        }
+      })
+      .catch((err: Error) => {
+        console.warn("[main] Post-resume session check failed:", err.message);
+      });
+  });
 });
 
 app.on("before-quit", () => {

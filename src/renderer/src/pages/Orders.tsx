@@ -4,18 +4,21 @@ import {
   ArrowTopRightOnSquareIcon,
   ArrowUturnLeftIcon,
   ChatBubbleLeftRightIcon,
+  ChevronDownIcon,
   ChevronRightIcon,
   EllipsisVerticalIcon,
   PlusCircleIcon,
   PrinterIcon,
 } from "@heroicons/react/20/solid";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Order } from "../../../shared/types";
 import { SHIPMENT_STATUS } from "../../../shared/types";
 import { Badge, type BadgeProps } from "../components/Badge";
 import FilterBar, { type FilterOption } from "../components/FilterBar";
+import { type ProgressState } from "../components/ProgressModal";
 import { SortArrow } from "../components/SortArrow";
 import { Button } from "../components/ui/button";
+import { Checkbox } from "../components/ui/checkbox";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -95,6 +98,11 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
   const [refreshingOrder, setRefreshingOrder] = useState<number | null>(null);
   const [replenishingOrder, setReplenishingOrder] = useState<number | null>(null);
   const [expandedBundles, setExpandedBundles] = useState<Set<number>>(new Set());
+  const [labelProgress, setLabelProgress] = useState<ProgressState | null>(null);
+  const labelProgressOrderRef = useRef<Order | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkProgress, setBulkProgress] = useState<ProgressState | null>(null);
+  const bulkCancelledRef = useRef(false);
   const { sortColumn, sortDirection, handleSort } = useTableSort<SortColumn>("date", "desc");
 
   // Load cached orders on mount (no API call)
@@ -107,9 +115,10 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
 
   // Listen for background polling updates
   useEffect(() => {
-    window.api.onOrdersUpdated((data) => {
+    const cleanup = window.api.onOrdersUpdated((data) => {
       setOrders(data.orders);
     });
+    return cleanup;
   }, []);
 
   // Manual refresh
@@ -163,18 +172,50 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
   const handleGenerateLabel = async (order: Order) => {
     if (!order.transactionId) return;
     setGeneratingLabel(order.id);
-    addToast("Generating shipping label…", "info");
+    labelProgressOrderRef.current = order;
+
+    setLabelProgress({
+      title: "Generating Shipping Label",
+      total: 1,
+      completed: 0,
+      failed: 0,
+      currentTitle: order.itemTitle,
+      currentAction: "Starting…",
+      done: false,
+    });
+
+    // Listen for progress events from main process
+    const cleanup = window.api.onLabelGenerationProgress(({ step }) => {
+      setLabelProgress((p) => (p ? { ...p, currentAction: step } : p));
+    });
+
     try {
       await window.api.orderShippingLabel(order.transactionId);
-      addToast("Shipping label generated", "success");
       // Brief delay — Vinted API takes a moment to reflect the new label
+      setLabelProgress((p) => (p ? { ...p, currentAction: "Waiting for Vinted to process…" } : p));
       await new Promise((r) => setTimeout(r, 3000));
       // Refresh just this order to pick up the new shipment
+      setLabelProgress((p) => (p ? { ...p, currentAction: "Refreshing order…" } : p));
       await window.api.refreshSingleOrder(order.transactionId);
+      setLabelProgress((p) => (p ? { ...p, completed: 1, done: true, currentAction: "Shipping label generated" } : p));
     } catch (err) {
-      addToast(`Failed to generate label: ${(err as Error).message}`, "error");
+      setLabelProgress((p) => (p ? { ...p, failed: 1, done: true, currentAction: `Failed: ${(err as Error).message}` } : p));
     } finally {
+      cleanup();
       setGeneratingLabel(null);
+    }
+  };
+
+  // Handle print from the label generation progress modal
+  const handlePrintFromProgress = async () => {
+    const order = labelProgressOrderRef.current;
+    if (!order) return;
+    // Re-fetch the order to get the latest shipment data
+    const latestOrder = orders.find((o) => o.id === order.id) || order;
+    if (latestOrder.shipmentId) {
+      setLabelProgress(null);
+      labelProgressOrderRef.current = null;
+      await handlePrintLabel(latestOrder);
     }
   };
 
@@ -213,6 +254,96 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
       else next.add(orderId);
       return next;
     });
+  };
+
+  // ─── Selection ────────────────────────────────────────────────────────
+  const toggleSelect = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selected.size === filtered.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(filtered.map((o) => o.id)));
+    }
+  };
+
+  // ─── Bulk generate shipping labels ─────────────────────────────────────
+  const handleBulkGenerateLabels = async () => {
+    const eligibleOrders = filtered.filter(
+      (o) => selected.has(o.id) && o.transactionId && (o.shipmentStatus === SHIPMENT_STATUS.NO_LABEL || o.shipmentStatus === null),
+    );
+    if (eligibleOrders.length === 0) {
+      addToast("No eligible orders selected (already have labels)", "info");
+      return;
+    }
+
+    bulkCancelledRef.current = false;
+    setBulkProgress({
+      title: `Generating labels for ${eligibleOrders.length} order(s)`,
+      total: eligibleOrders.length,
+      completed: 0,
+      failed: 0,
+      currentTitle: "",
+      currentAction: "",
+      done: false,
+    });
+
+    let completed = 0;
+    let failed = 0;
+
+    for (const order of eligibleOrders) {
+      if (bulkCancelledRef.current) break;
+
+      setBulkProgress((p) =>
+        p
+          ? {
+              ...p,
+              currentTitle: order.itemTitle,
+              currentAction: "Generating shipping label…",
+            }
+          : p,
+      );
+
+      // Listen for per-order progress
+      const cleanup = window.api.onLabelGenerationProgress(({ step }) => {
+        setBulkProgress((p) => (p ? { ...p, currentAction: step } : p));
+      });
+
+      try {
+        await window.api.orderShippingLabel(order.transactionId!);
+        completed++;
+        // Brief delay for Vinted to process
+        await new Promise((r) => setTimeout(r, 2000));
+        await window.api.refreshSingleOrder(order.transactionId!);
+      } catch {
+        failed++;
+      } finally {
+        cleanup();
+      }
+
+      setBulkProgress((p) => (p ? { ...p, completed, failed } : p));
+    }
+
+    setBulkProgress((p) =>
+      p
+        ? {
+            ...p,
+            completed,
+            failed,
+            done: true,
+            currentTitle: "",
+            currentAction: `${completed} generated${failed > 0 ? `, ${failed} failed` : ""}`,
+          }
+        : p,
+    );
+    setSelected(new Set());
   };
 
   // ─── Filter & Sort ──────────────────────────────────────────────────────
@@ -269,9 +400,27 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
         statusValue={statusFilter}
         onStatusChange={setStatusFilter}
         actions={
-          <Button variant="outline" onClick={handleRefresh} disabled={loading} className="flex-shrink-0">
-            {loading ? "Loading…" : "Refresh"}
-          </Button>
+          <div className="flex items-center gap-2">
+            {selected.size > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    Bulk Actions
+                    <ChevronDownIcon className="w-4 h-4 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={handleBulkGenerateLabels}>
+                    <PlusCircleIcon className="w-4 h-4" />
+                    Generate Shipping Labels
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            <Button variant="outline" onClick={handleRefresh} disabled={loading} className="flex-shrink-0">
+              {loading ? "Loading…" : "Refresh"}
+            </Button>
+          </div>
         }
       />
 
@@ -287,6 +436,9 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="px-4 py-3 w-10">
+                    <Checkbox checked={selected.size > 0 && selected.size === filtered.length} onCheckedChange={selectAll} />
+                  </TableHead>
                   <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("date")}>
                     Date
                     <SortArrow column="date" sortColumn={sortColumn} sortDirection={sortDirection} />
@@ -325,6 +477,11 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
                   return (
                     <React.Fragment key={order.id}>
                       <TableRow>
+                        {/* Checkbox */}
+                        <TableCell className="px-4 py-3 w-10">
+                          <Checkbox checked={selected.has(order.id)} onCheckedChange={() => toggleSelect(order.id)} />
+                        </TableCell>
+
                         {/* Date */}
                         <TableCell className="px-4 py-3 text-sm whitespace-nowrap">
                           {(() => {
@@ -366,7 +523,20 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
                         </TableCell>
 
                         {/* Buyer */}
-                        <TableCell className="px-4 py-3">{order.buyerUsername}</TableCell>
+                        <TableCell className="px-4 py-3">
+                          {order.buyerProfileUrl ? (
+                            <Button
+                              variant="link"
+                              className="p-0 h-auto cursor-pointer inline-flex items-center gap-1"
+                              onClick={() => window.api.openExternal(order.buyerProfileUrl!)}
+                            >
+                              {order.buyerUsername}
+                              <ArrowTopRightOnSquareIcon className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
+                            </Button>
+                          ) : (
+                            order.buyerUsername
+                          )}
+                        </TableCell>
 
                         {/* Price */}
                         <TableCell className="px-4 py-3 font-medium whitespace-nowrap">{order.price ?? "—"}</TableCell>
@@ -402,10 +572,11 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
                                   <TooltipTrigger asChild>
                                     <Button
                                       variant="link"
-                                      className="p-0 h-auto cursor-pointer"
+                                      className="p-0 h-auto cursor-pointer inline-flex items-center gap-1"
                                       onClick={() => window.api.openExternal(order.trackingUrl!)}
                                     >
                                       {order.trackingNumber}
+                                      <ArrowTopRightOnSquareIcon className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
                                     </Button>
                                   </TooltipTrigger>
                                   <TooltipContent>Open tracking page</TooltipContent>
@@ -488,6 +659,7 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
                         order.bundleItems.map((bundleItem, idx) => (
                           <TableRow key={`${order.id}-bundle-${idx}`} className="bg-muted/30">
                             <TableCell className="px-4 py-2"></TableCell>
+                            <TableCell className="px-4 py-2"></TableCell>
                             <TableCell className="px-4 py-2" colSpan={8}>
                               <div className="flex items-center gap-3 pl-6">
                                 <div className="w-8 h-8 rounded bg-muted overflow-hidden flex-shrink-0">
@@ -508,6 +680,49 @@ const Orders: React.FC<OrdersProps> = ({ loggedIn, addToast }) => {
               </TableBody>
             </Table>
           </Card>
+        </div>
+      )}
+
+      {/* Label generation progress modal */}
+      {labelProgress && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-card rounded-lg border border-border p-6 w-full max-w-md space-y-4">
+            <h3 className="text-sm font-semibold text-foreground">{labelProgress.title}</h3>
+
+            {!labelProgress.done && (
+              <div className="space-y-2">
+                {labelProgress.currentTitle && <p className="text-xs text-foreground font-medium truncate">{labelProgress.currentTitle}</p>}
+                <div className="flex items-center gap-2">
+                  <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-muted-foreground truncate">{labelProgress.currentAction}</p>
+                </div>
+              </div>
+            )}
+
+            {labelProgress.done && (
+              <div className="space-y-3">
+                <p className="text-xs text-muted-foreground">{labelProgress.currentAction}</p>
+                <div className="flex justify-end gap-2 pt-2">
+                  {labelProgress.failed === 0 && (
+                    <Button size="sm" onClick={handlePrintFromProgress}>
+                      <PrinterIcon className="w-4 h-4 mr-1" />
+                      Print
+                    </Button>
+                  )}
+                  <Button
+                    size="sm"
+                    variant={labelProgress.failed > 0 ? "default" : "outline"}
+                    onClick={() => {
+                      setLabelProgress(null);
+                      labelProgressOrderRef.current = null;
+                    }}
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

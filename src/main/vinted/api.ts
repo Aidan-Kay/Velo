@@ -12,6 +12,7 @@
 
 export { checkSession, getLoginStatus, login, logout } from "./auth";
 export { getCategories, getCategoryAttributes, getConditions, getPackageSizes } from "./catalog";
+export { resetClientWindow } from "./lib/requester";
 export {
   createListing,
   deleteListing,
@@ -22,4 +23,11 @@ export {
   publishListing,
 } from "./listings";
 export { getConversation, getMyOrders, getTransactionDetail } from "./orders";
-export { getDefaultShippingAddress, getJourneySummary, getShippingInstructions, getShippingLabelUrl, orderShippingLabel } from "./shipping";
+export {
+  getDefaultShippingAddress,
+  getJourneySummary,
+  getShipmentLabelOptions,
+  getShippingInstructions,
+  getShippingLabelUrl,
+  orderShippingLabel,
+} from "./shipping";

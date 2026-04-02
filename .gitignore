@@ -1,6 +1,7 @@
 node_modules/
 release/
 dist/
+out/
 src/renderer/styles/style.css
 *.log
 .DS_Store

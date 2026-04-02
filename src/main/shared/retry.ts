@@ -51,7 +51,11 @@ export function isTransientError(err: Error & { code?: string; status?: number; 
   }
   if (
     err.message &&
-    (err.message.includes("disposed") || err.message.includes("Render frame was disposed") || err.message.includes("ERR_ABORTED"))
+    (err.message.includes("disposed") ||
+      err.message.includes("Render frame was disposed") ||
+      err.message.includes("ERR_ABORTED") ||
+      err.message.includes("Failed to fetch") ||
+      err.message.includes("net::ERR_"))
   ) {
     return true;
   }

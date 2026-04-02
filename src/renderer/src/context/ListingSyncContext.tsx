@@ -73,10 +73,11 @@ export const ListingSyncProvider: React.FC<ListingSyncProviderProps> = ({ logged
 
   // Listen for background polling updates
   useEffect(() => {
-    window.api.onListingsUpdated((data) => {
+    const cleanup = window.api.onListingsUpdated((data) => {
       setListings(data.items);
       setPagination(data.pagination);
     });
+    return cleanup;
   }, []);
 
   // Force-refresh (triggers API call via polling manager)

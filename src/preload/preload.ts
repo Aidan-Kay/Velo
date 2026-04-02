@@ -52,36 +52,55 @@ const api: ElectronAPI = {
   getPrinters: () => ipcRenderer.invoke("get-printers"),
   getPaperSizes: (printerName) => ipcRenderer.invoke("get-paper-sizes", printerName),
 
-  // ─── Restocking ───────────────────────────────────────────────────────────
-  getRestockQueue: () => ipcRenderer.invoke("get-restock-queue"),
-  queueForRestock: (itemId, soldAt) => ipcRenderer.invoke("queue-for-restock", itemId, soldAt),
-  removeFromRestockQueue: (itemId) => ipcRenderer.invoke("remove-from-restock-queue", itemId),
+  // ─── Relisting ───────────────────────────────────────────────────────────────────
+  getRelistQueue: () => ipcRenderer.invoke("get-relist-queue"),
+  queueForRelist: (itemId, soldAt) => ipcRenderer.invoke("queue-for-relist", itemId, soldAt),
+  removeFromRelistQueue: (itemId) => ipcRenderer.invoke("remove-from-relist-queue", itemId),
 
   // ─── Browser ──────────────────────────────────────────────────────────────
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
 
   // ─── Events (main → renderer) ────────────────────────────────────────────
   onSessionStatus: (callback) => {
-    ipcRenderer.removeAllListeners("session-status");
-    ipcRenderer.on("session-status", (_event, status) => callback(status));
+    const handler = (_event: Electron.IpcRendererEvent, status: any) => callback(status);
+    ipcRenderer.on("session-status", handler);
+    return () => {
+      ipcRenderer.off("session-status", handler);
+    };
   },
-  onItemRestocked: (callback) => {
-    ipcRenderer.removeAllListeners("item-restocked");
-    ipcRenderer.on("item-restocked", (_event, data) => callback(data));
+  onItemRelisted: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("item-relisted", handler);
+    return () => {
+      ipcRenderer.off("item-relisted", handler);
+    };
   },
   onListingsUpdated: (callback) => {
-    ipcRenderer.removeAllListeners("listings-updated");
-    ipcRenderer.on("listings-updated", (_event, data) => callback(data));
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("listings-updated", handler);
+    return () => {
+      ipcRenderer.off("listings-updated", handler);
+    };
   },
   onOrdersUpdated: (callback) => {
-    ipcRenderer.removeAllListeners("orders-updated");
-    ipcRenderer.on("orders-updated", (_event, data) => callback(data));
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("orders-updated", handler);
+    return () => {
+      ipcRenderer.off("orders-updated", handler);
+    };
   },
   onListingCreationProgress: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: { step: string; current: number; total: number }) => callback(data);
     ipcRenderer.on("listing-creation-progress", handler);
     return () => {
       ipcRenderer.off("listing-creation-progress", handler);
+    };
+  },
+  onLabelGenerationProgress: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: { transactionId: number; step: string }) => callback(data);
+    ipcRenderer.on("label-generation-progress", handler);
+    return () => {
+      ipcRenderer.off("label-generation-progress", handler);
     };
   },
 };

@@ -65,6 +65,21 @@ export interface RawOrderEntry {
 
 // ─── Listing Mappers ────────────────────────────────────────────────────────
 
+/** Extract a creation timestamp from a photo URL.
+ *  Vinted photo URLs end with a unix-timestamp filename, e.g.
+ *  https://images1.vinted.net/t/.../f800/1774971858.webp → 1774971858
+ *  Returns an ISO string or null if extraction fails. */
+function extractPhotoTimestamp(photos: RawPhoto[] | undefined): string | null {
+  if (!photos?.length) return null;
+  const url = photos[0].full_size_url || photos[0].url;
+  if (!url) return null;
+  const match = url.match(/\/(\d{9,11})\.\w+(?:\?|$)/);
+  if (!match) return null;
+  const epoch = parseInt(match[1], 10);
+  if (isNaN(epoch)) return null;
+  return new Date(epoch * 1000).toISOString();
+}
+
 /** Map a raw Vinted wardrobe item to our VintedListing shape. */
 export function mapRawToVintedListing(raw: RawItem, domain: string): VintedListing {
   const rawPrice = raw.price as RawPrice | undefined;
@@ -90,7 +105,7 @@ export function mapRawToVintedListing(raw: RawItem, domain: string): VintedListi
     photos: Array.isArray(raw.photos) ? (raw.photos.map((p) => p.full_size_url || p.url).filter(Boolean) as string[]) : [],
     views: raw.view_count || 0,
     favourites: raw.favourite_count || 0,
-    createdAt: raw.push_up?.next_push_up_time || raw.created_at || null,
+    createdAt: extractPhotoTimestamp(raw.photos) || raw.created_at || null,
     updatedAt: null,
     status: getStatusLabel(raw),
     statusRaw: typeof raw.status === "number" ? raw.status : 0,
@@ -149,7 +164,7 @@ export function mapItemUploadToVintedListing(detail: Record<string, unknown>, li
     photos: rawPhotos.map((p) => p.full_size_url || p.url).filter(Boolean) as string[],
     views: 0,
     favourites: 0,
-    createdAt: null,
+    createdAt: extractPhotoTimestamp(rawPhotos) || null,
     updatedAt: null,
     status: statusLabel,
     statusRaw: isDraft ? 0 : 1,
@@ -164,6 +179,15 @@ export function mapItemUploadToVintedListing(detail: Record<string, unknown>, li
 
 // ─── Order Mappers ──────────────────────────────────────────────────────────
 
+/** Simple deterministic hash for generating stable fallback IDs. */
+function simpleHash(str: string): number {
+  let hash = 5381;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) + hash + str.charCodeAt(i)) >>> 0;
+  }
+  return hash || 1;
+}
+
 /** Map a raw order entry to our Order shape. */
 export function normalizeOrder(raw: RawOrderEntry, domain: string): Order {
   const priceAmount = raw.price?.amount != null ? parseFloat(raw.price.amount) : null;
@@ -177,7 +201,7 @@ export function normalizeOrder(raw: RawOrderEntry, domain: string): Order {
     null;
 
   return {
-    id: raw.transaction_id || raw.conversation_id || -(Date.now() + Math.random()),
+    id: raw.transaction_id || raw.conversation_id || -simpleHash(`${raw.title}-${raw.date}`),
     transactionId: raw.transaction_id || null,
     conversationId: raw.conversation_id || null,
     conversationUrl: raw.conversation_id ? `https://${domain}/inbox/${raw.conversation_id}` : null,
@@ -186,6 +210,7 @@ export function normalizeOrder(raw: RawOrderEntry, domain: string): Order {
     price: priceAmount != null ? `${currencySymbol}${priceAmount.toFixed(2)}` : null,
     priceNumeric: priceAmount,
     currency,
+    buyerId: null,
     buyerUsername: "—",
     buyerAvatar: null,
     courier: "—",

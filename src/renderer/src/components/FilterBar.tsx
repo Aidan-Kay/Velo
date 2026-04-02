@@ -29,14 +29,16 @@ const FilterBar: React.FC<FilterBarProps> = ({
   statusAllLabel = "All statuses",
   actions,
 }) => {
-  const allSelected = !statusValue || statusValue.length === 0;
+  const allSelected = !statusValue || statusValue.length === 0 || (statusOptions != null && statusValue.length === statusOptions.length);
 
   const toggleStatusValue = (v: string) => {
     if (!onStatusChange || !statusValue) return;
     if (statusValue.includes(v)) {
-      onStatusChange(statusValue.filter((x) => x !== v));
+      const next = statusValue.filter((x) => x !== v);
+      onStatusChange(next);
     } else {
       const next = [...statusValue, v];
+      // If all options are now selected, clear to [] (meaning "show all")
       if (statusOptions && next.length === statusOptions.length) {
         onStatusChange([]);
       } else {
@@ -75,7 +77,7 @@ const FilterBar: React.FC<FilterBarProps> = ({
             {statusOptions.map((opt) => (
               <DropdownMenuCheckboxItem
                 key={opt.value}
-                checked={statusValue?.includes(opt.value) ?? false}
+                checked={allSelected || (statusValue?.includes(opt.value) ?? false)}
                 onCheckedChange={() => toggleStatusValue(opt.value)}
               >
                 {opt.label}

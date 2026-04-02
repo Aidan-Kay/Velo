@@ -1,4 +1,5 @@
-import type { JourneySummaryResult, Order, Pagination, TransactionDetail, VintedListing } from "../shared/types";
+import type { Order, Pagination, VintedListing } from "../shared/types";
+import { enrichOrder, pickEnrichmentFields } from "./order-enrichment";
 import * as vintedApi from "./vinted/api";
 
 // ─── Config ────────────────────────────────────────────────────────────────
@@ -82,50 +83,7 @@ export class PollingManager {
 
     const order = cachedOrders[idx];
     try {
-      const detail: TransactionDetail = await vintedApi.getTransactionDetail(transactionId, domain);
-
-      // Fetch shipping instructions for courier info (available before label generation)
-      let shippingCourier: string | null = null;
-      let shippingCarrierLogo: string | null = null;
-      try {
-        const instructions = (await vintedApi.getShippingInstructions(transactionId, domain)) as {
-          shipping_instructions?: { carrier?: { name?: string; icon_url?: string } };
-        };
-        shippingCourier = instructions?.shipping_instructions?.carrier?.name || null;
-        shippingCarrierLogo = instructions?.shipping_instructions?.carrier?.icon_url || null;
-      } catch (err) {
-        console.warn(`[polling] Shipping instructions unavailable for ${transactionId}:`, (err as Error).message);
-      }
-
-      let journey: JourneySummaryResult | null = null;
-      if (detail.shipment?.id) {
-        try {
-          journey = await vintedApi.getJourneySummary(transactionId, domain);
-        } catch (err) {
-          console.warn(`[polling] Journey summary unavailable for ${transactionId}:`, (err as Error).message);
-        }
-      }
-
-      const enriched: Order = {
-        ...order,
-        buyerUsername: detail.buyer?.login || order.buyerUsername,
-        buyerAvatar: detail.buyer?.photo?.url || order.buyerAvatar,
-        courier: journey?.carrierCode || detail.shipment?.carrier_code || shippingCourier || order.courier,
-        trackingNumber: journey?.trackingCode || detail.shipment?.tracking_code || order.trackingNumber,
-        trackingUrl: journey?.trackingUrl || detail.shipment?.tracking_url || order.trackingUrl,
-        shipmentId: detail.shipment?.id || order.shipmentId,
-        shipmentStatus: detail.shipment?.status ?? order.shipmentStatus ?? null,
-        carrierLogoUrl: journey?.carrierLogoUrl || shippingCarrierLogo || order.carrierLogoUrl,
-        estimatedDelivery: journey?.estimatedDelivery || order.estimatedDelivery,
-        isBundle: Array.isArray(detail.order?.items) && detail.order.items.length > 1,
-        bundleItems:
-          Array.isArray(detail.order?.items) && detail.order.items.length > 1
-            ? detail.order.items.map((item) => ({
-                title: item.title || "",
-                thumbnail: item.photos?.[0]?.thumbnails?.find((t) => t.type === "thumb150x210")?.url || null,
-              }))
-            : order.bundleItems,
-      };
+      const enriched = await enrichOrder(order, domain);
 
       const updated = [...cachedOrders];
       updated[idx] = enriched;
@@ -210,7 +168,7 @@ export class PollingManager {
   private async fetchListings(): Promise<{ items: VintedListing[]; pagination: Pagination }> {
     if (this.listingsFetching) {
       console.log("[polling] Listings fetch already in progress, skipping");
-      return { items: [], pagination: {} };
+      return { items: this.callbacks.getCachedListings(), pagination: {} };
     }
 
     this.listingsFetching = true;
@@ -231,7 +189,7 @@ export class PollingManager {
   private async fetchOrders(): Promise<{ orders: Order[]; pagination: Pagination }> {
     if (this.ordersFetching) {
       console.log("[polling] Orders fetch already in progress, skipping");
-      return { orders: [], pagination: {} };
+      return { orders: this.callbacks.getCachedOrders(), pagination: {} };
     }
 
     this.ordersFetching = true;
@@ -255,7 +213,9 @@ export class PollingManager {
         if (cached && cached.statusLabel === order.statusLabel) {
           enrichedOrders.push({
             ...order,
+            buyerId: cached.buyerId,
             buyerUsername: cached.buyerUsername,
+            buyerProfileUrl: cached.buyerProfileUrl,
             buyerAvatar: cached.buyerAvatar,
             courier: cached.courier,
             trackingNumber: cached.trackingNumber,
@@ -273,51 +233,8 @@ export class PollingManager {
         // Status changed or new order — fetch transaction detail
         if (order.transactionId) {
           try {
-            const detail: TransactionDetail = await vintedApi.getTransactionDetail(order.transactionId, domain);
-
-            // Fetch shipping instructions for courier info (available before label generation)
-            let shippingCourier: string | null = null;
-            let shippingCarrierLogo: string | null = null;
-            try {
-              const instructions = (await vintedApi.getShippingInstructions(order.transactionId, domain)) as {
-                shipping_instructions?: { carrier?: { name?: string; icon_url?: string } };
-              };
-              shippingCourier = instructions?.shipping_instructions?.carrier?.name || null;
-              shippingCarrierLogo = instructions?.shipping_instructions?.carrier?.icon_url || null;
-            } catch (err) {
-              console.warn(`[polling] Shipping instructions unavailable for ${order.transactionId}:`, (err as Error).message);
-            }
-
-            // Fetch journey summary for tracking/courier info (non-critical)
-            let journey: JourneySummaryResult | null = null;
-            if (detail.shipment?.id) {
-              try {
-                journey = await vintedApi.getJourneySummary(order.transactionId, domain);
-              } catch (err) {
-                console.warn(`[polling] Journey summary unavailable for ${order.transactionId}:`, (err as Error).message);
-              }
-            }
-
-            enrichedOrders.push({
-              ...order,
-              buyerUsername: detail.buyer?.login || order.buyerUsername,
-              buyerAvatar: detail.buyer?.photo?.url || order.buyerAvatar,
-              courier: journey?.carrierCode || detail.shipment?.carrier_code || shippingCourier || order.courier,
-              trackingNumber: journey?.trackingCode || detail.shipment?.tracking_code || order.trackingNumber,
-              trackingUrl: journey?.trackingUrl || detail.shipment?.tracking_url || order.trackingUrl,
-              shipmentId: detail.shipment?.id || order.shipmentId,
-              shipmentStatus: detail.shipment?.status ?? order.shipmentStatus ?? null,
-              carrierLogoUrl: journey?.carrierLogoUrl || shippingCarrierLogo || order.carrierLogoUrl,
-              estimatedDelivery: journey?.estimatedDelivery || order.estimatedDelivery,
-              isBundle: Array.isArray(detail.order?.items) && detail.order.items.length > 1,
-              bundleItems:
-                Array.isArray(detail.order?.items) && detail.order.items.length > 1
-                  ? detail.order.items.map((item) => ({
-                      title: item.title || "",
-                      thumbnail: item.photos?.[0]?.thumbnails?.find((t) => t.type === "thumb150x210")?.url || null,
-                    }))
-                  : order.bundleItems,
-            });
+            const enriched = await enrichOrder(order, domain);
+            enrichedOrders.push(enriched);
           } catch (err) {
             console.warn(`[polling] Failed to enrich order ${order.transactionId}:`, (err as Error).message);
             // Fall back to unenriched data, but keep any cached enrichment
@@ -337,22 +254,4 @@ export class PollingManager {
       this.ordersFetching = false;
     }
   }
-}
-
-/** Pick only enrichment fields from a cached order (to preserve when API call fails). */
-function pickEnrichmentFields(cached: Order): Partial<Order> {
-  return {
-    buyerUsername: cached.buyerUsername,
-    buyerAvatar: cached.buyerAvatar,
-    courier: cached.courier,
-    trackingNumber: cached.trackingNumber,
-    trackingUrl: cached.trackingUrl,
-    shipmentId: cached.shipmentId,
-    shipmentStatus: cached.shipmentStatus,
-    carrierLogoUrl: cached.carrierLogoUrl,
-    estimatedDelivery: cached.estimatedDelivery,
-    isBundle: cached.isBundle,
-    bundleItems: cached.bundleItems,
-    stockReplenished: cached.stockReplenished,
-  };
 }

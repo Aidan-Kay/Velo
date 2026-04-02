@@ -3,17 +3,18 @@ import Sidebar from "./components/Sidebar";
 import Toast, { ToastData } from "./components/Toast";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { ListingSyncProvider } from "./context/ListingSyncContext";
+import Dashboard from "./pages/Dashboard";
 import Items from "./pages/Items";
 import Listings from "./pages/Listings";
 import Orders from "./pages/Orders";
 import Settings from "./pages/Settings";
 
-type Page = "listings" | "items" | "orders" | "settings";
+type Page = "dashboard" | "listings" | "items" | "orders" | "settings";
 
 let toastIdCounter = 0;
 
 const App: React.FC = () => {
-  const [page, setPage] = useState<Page>("listings");
+  const [page, setPage] = useState<Page>("dashboard");
   const [loggedIn, setLoggedIn] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
   const [toasts, setToasts] = useState<ToastData[]>([]);
@@ -58,7 +59,7 @@ const App: React.FC = () => {
       await window.api.logout();
       setLoggedIn(false);
       addToast("Logged out", "info");
-      setPage("listings");
+      setPage("dashboard");
     } catch {
       addToast("Logout failed", "error");
     }
@@ -80,24 +81,31 @@ const App: React.FC = () => {
 
   // ─── Listen for push events from main process ──────────────────────────
   useEffect(() => {
-    window.api.onSessionStatus((status) => {
+    const cleanupSession = window.api.onSessionStatus((status) => {
       setLoggedIn(status.loggedIn);
       if (!status.loggedIn) {
         addToast("Session expired — please log in again", "error");
       }
     });
 
-    window.api.onItemRestocked((data) => {
-      addToast(`Restocked: ${data.item.title}`, "success");
+    const cleanupRelist = window.api.onItemRelisted((data) => {
+      addToast(`Relisted: ${data.item.title}`, "success");
     });
 
     // Listings/orders polling events are handled by individual page components
     // (they listen via onListingsUpdated / onOrdersUpdated)
+
+    return () => {
+      cleanupSession();
+      cleanupRelist();
+    };
   }, [addToast]);
 
   // ─── Render page ───────────────────────────────────────────────────────
   const renderPage = () => {
     switch (page) {
+      case "dashboard":
+        return <Dashboard loggedIn={loggedIn} addToast={addToast} />;
       case "listings":
         return <Listings loggedIn={loggedIn} addToast={addToast} />;
       case "items":

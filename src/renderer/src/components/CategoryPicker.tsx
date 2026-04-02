@@ -37,13 +37,17 @@ const CategoryPicker: React.FC<CategoryPickerProps> = ({ categories, selectedId,
     return last.catalogs || [];
   }, [categories, breadcrumb]);
 
+  // Memoize the flattened tree separately from search filtering
+  const flatCategories = useMemo(() => flattenCategories(categories), [categories]);
+
   // Flat search results
   const searchResults = useMemo(() => {
     if (!searchQuery.trim()) return null;
     const q = searchQuery.toLowerCase();
-    const flat = flattenCategories(categories);
-    return flat.filter(({ node, fullPath }) => node.title.toLowerCase().includes(q) || fullPath.toLowerCase().includes(q)).slice(0, 50);
-  }, [categories, searchQuery]);
+    return flatCategories
+      .filter(({ node, fullPath }) => node.title.toLowerCase().includes(q) || fullPath.toLowerCase().includes(q))
+      .slice(0, 50);
+  }, [flatCategories, searchQuery]);
 
   // Reset breadcrumb when categories change
   useEffect(() => {

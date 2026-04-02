@@ -41,6 +41,8 @@ export interface LocalItem {
   shippingMethodId: number | null;
   photos: string[];
   stock: number;
+  /** Whether automatic relisting is enabled for this item. Defaults to true. */
+  relistingEnabled: boolean;
   /** Dynamic category-specific attribute values: { attributeCode: valueId | valueId[] } */
   categoryAttributes: Record<string, number | number[]>;
   // Extended listing fields (optional — not present on older saved items)
@@ -81,6 +83,7 @@ export interface Order {
   price: string | null;
   priceNumeric: number | null;
   currency: string;
+  buyerId: number | null;
   buyerUsername: string;
   buyerAvatar: string | null;
   courier: string;
@@ -99,6 +102,10 @@ export interface Order {
   bundleItems: Array<{ title: string; thumbnail: string | null }>;
   /** Whether stock was replenished after this order was cancelled. */
   stockReplenished?: boolean;
+  /** Whether stock was already reduced for this order (shipped-based reduction). */
+  stockReduced?: boolean;
+  /** Whether the buyer profile link has been resolved. */
+  buyerProfileUrl?: string | null;
 }
 
 // ─── Category / Catalog Tree ──────────────────────────────────────────────────
@@ -180,7 +187,7 @@ export interface JourneySummaryResult {
 
 export interface TransactionDetail {
   id: number;
-  buyer?: { login?: string; photo?: { url?: string } };
+  buyer?: { id?: number; login?: string; photo?: { url?: string } };
   item?: { id?: number; title?: string; photos?: Array<{ thumbnails?: Array<{ type: string; url: string }> }> };
   shipment?: {
     id?: number;
@@ -203,7 +210,7 @@ export interface TransactionDetail {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
-export interface RestockingSettings {
+export interface RelistingSettings {
   enabled: boolean;
   listAsDraft: boolean;
   delayMinutes: number;
@@ -219,13 +226,21 @@ export interface LabelPrinterSettings {
   paperSize: string;
 }
 
+export type LabelTypePreference = "printable" | "digital";
+
 export interface AppSettings {
   site: string;
   minimizeToTray: boolean;
   darkMode: boolean;
-  restocking: RestockingSettings;
+  relisting: RelistingSettings;
   bulkRepost: BulkRepostSettings;
   labelPrinter?: LabelPrinterSettings;
+  /** Whether to automatically reduce item stock when an order reaches the "shipped" stage. */
+  reduceStockOnShipped: boolean;
+  /** Whether to automatically generate shipping labels when new orders are found. */
+  autoGenerateLabels: boolean;
+  /** Preferred label type when generating shipping labels ("printable" or "digital"). */
+  preferredLabelType: LabelTypePreference;
 }
 
 // ─── Shipment Status Codes ────────────────────────────────────────────────────
@@ -237,17 +252,17 @@ export const SHIPMENT_STATUS = {
   DELIVERED: 400,
 } as const;
 
-// ─── Restock Queue Entry ──────────────────────────────────────────────────────
+// ─── Relist Queue Entry ───────────────────────────────────────────────────────
 
-export type RestockStatus = "pending" | "processing" | "completed" | "failed";
+export type RelistStatus = "pending" | "processing" | "completed" | "failed";
 
-export interface RestockEntry {
+export interface RelistEntry {
   itemId: string;
   itemTitle: string;
   soldAt: string;
   queuedAt: string;
   relistAt: string | null;
-  status: RestockStatus;
+  status: RelistStatus;
 }
 
 // ─── API Response Types ───────────────────────────────────────────────────────
@@ -335,20 +350,21 @@ export interface ElectronAPI {
   getPrinters: () => Promise<PrinterInfo[]>;
   getPaperSizes: (printerName: string) => Promise<string[]>;
 
-  // Restocking
-  getRestockQueue: () => Promise<RestockEntry[]>;
-  queueForRestock: (itemId: string, soldAt: string) => Promise<{ success: boolean }>;
-  removeFromRestockQueue: (itemId: string) => Promise<{ success: boolean }>;
+  // Relisting
+  getRelistQueue: () => Promise<RelistEntry[]>;
+  queueForRelist: (itemId: string, soldAt: string) => Promise<{ success: boolean }>;
+  removeFromRelistQueue: (itemId: string) => Promise<{ success: boolean }>;
 
   // Browser
   openExternal: (url: string) => Promise<void>;
 
   // Events
-  onSessionStatus: (callback: (status: SessionResult) => void) => void;
-  onItemRestocked: (callback: (data: { itemId: string; item: LocalItem }) => void) => void;
-  onListingsUpdated: (callback: (data: { items: VintedListing[]; pagination: Pagination }) => void) => void;
-  onOrdersUpdated: (callback: (data: { orders: Order[]; pagination: Pagination }) => void) => void;
+  onSessionStatus: (callback: (status: SessionResult) => void) => () => void;
+  onItemRelisted: (callback: (data: { itemId: string; item: LocalItem }) => void) => () => void;
+  onListingsUpdated: (callback: (data: { items: VintedListing[]; pagination: Pagination }) => void) => () => void;
+  onOrdersUpdated: (callback: (data: { orders: Order[]; pagination: Pagination }) => void) => () => void;
   onListingCreationProgress: (callback: (data: { step: string; current: number; total: number }) => void) => () => void;
+  onLabelGenerationProgress: (callback: (data: { transactionId: number; step: string }) => void) => () => void;
 }
 
 declare global {

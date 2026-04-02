@@ -61,8 +61,9 @@ export async function runBulkOperation<T extends BulkOperationItem>({
       updateAction("Processing…");
       await action(item, updateAction, updateItemStep);
       completed++;
-    } catch {
+    } catch (err) {
       failed++;
+      console.error(`[bulk] Failed for "${item.title}":`, (err as Error).message);
     }
 
     setProgress((p) => (p ? { ...p, completed, failed } : p));

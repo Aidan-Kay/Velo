@@ -5,7 +5,7 @@ import { getPaperSizesForPrinter, listPrinters, printShippingLabel } from "./lab
 import { saveCachedOrders, saveItems, saveSettings } from "./persistence";
 import { deleteItemPhotos, downloadItemPhotos } from "./photo-downloader";
 import { PollingManager } from "./polling";
-import { getRestockQueue, queueForRestock, removeFromQueue } from "./restocking";
+import type { RelistingManager } from "./relisting";
 import { getDomain } from "./shared/constants";
 import * as vintedApi from "./vinted/api";
 
@@ -23,6 +23,7 @@ export function setupIpc(
   setSettings: (s: AppSettings) => void,
   getWindow: () => BrowserWindow | null,
   polling: PollingManager,
+  relisting: RelistingManager,
 ): void {
   // ─── Authentication ─────────────────────────────────────────────────────────
 
@@ -206,7 +207,7 @@ export function setupIpc(
 
     // Download remote photos to local storage
     if (item.photos && item.photos.length > 0) {
-      const isUpdate = !!item.id && state.items.some((i) => i.id === item.id);
+      const isUpdate = state.items.some((i) => i.id === item.id);
       try {
         item.photos = await downloadItemPhotos(item.id!, item.photos, isUpdate);
       } catch (err) {
@@ -231,6 +232,7 @@ export function setupIpc(
       shippingMethodId: null,
       photos: [],
       stock: 1,
+      relistingEnabled: true,
       categoryAttributes: {},
     };
 
@@ -328,21 +330,21 @@ export function setupIpc(
     return { success: true };
   });
 
-  // ─── Restocking ─────────────────────────────────────────────────────────────
+  // ─── Relisting ─────────────────────────────────────────────────────────────────
 
-  ipcMain.handle("get-restock-queue", () => {
-    return getRestockQueue();
+  ipcMain.handle("get-relist-queue", () => {
+    return relisting.getQueue();
   });
 
-  ipcMain.handle("queue-for-restock", (_event, itemId: string, soldAt: string) => {
+  ipcMain.handle("queue-for-relist", (_event, itemId: string, soldAt: string) => {
     const item = state.items.find((i) => i.id === itemId);
     if (!item) throw new Error("Item not found");
-    queueForRestock(item, soldAt);
+    relisting.queueForRelist(item, soldAt);
     return { success: true };
   });
 
-  ipcMain.handle("remove-from-restock-queue", (_event, itemId: string) => {
-    removeFromQueue(itemId);
+  ipcMain.handle("remove-from-relist-queue", (_event, itemId: string) => {
+    relisting.removeFromQueue(itemId);
     return { success: true };
   });
 
@@ -386,9 +388,15 @@ export function setupIpc(
     return { success: true };
   });
 
-  ipcMain.handle("order-shipping-label", async (_event, transactionId: number) => {
+  ipcMain.handle("order-shipping-label", async (event, transactionId: number) => {
     const settings = getSettings();
     const domain = getDomain(settings.site);
+
+    const sendProgress = (step: string) => {
+      event.sender.send("label-generation-progress", { transactionId, step });
+    };
+
+    sendProgress("Fetching shipping address");
 
     // Fetch default shipping address to get the seller address ID
     const addressResult = await vintedApi.getDefaultShippingAddress(domain);
@@ -397,15 +405,40 @@ export function setupIpc(
       throw new Error("No default shipping address configured");
     }
 
-    await vintedApi.orderShippingLabel(transactionId, sellerAddressId, "printable", domain);
+    // Determine the best label type based on settings + available options
+    const order = state.cachedOrders.find((o) => o.transactionId === transactionId);
+    let labelType = settings.preferredLabelType || "printable";
+
+    if (order?.shipmentId) {
+      try {
+        sendProgress("Obtaining label options for courier");
+        const labelOpts = await vintedApi.getShipmentLabelOptions(order.shipmentId, domain);
+        if (labelOpts.label_types.length > 0 && !labelOpts.label_types.includes(labelType)) {
+          // Preferred type not available — use whatever is available
+          labelType = labelOpts.label_types[0] as "printable" | "digital";
+          console.log(`[label] Preferred label type not available, using "${labelType}" instead`);
+        }
+      } catch (err) {
+        console.warn(`[label] Failed to fetch label options, using preferred type "${labelType}":`, (err as Error).message);
+      }
+    }
+
+    sendProgress("Ordering a printable label");
+    await vintedApi.orderShippingLabel(transactionId, sellerAddressId, labelType, domain);
+    sendProgress("Label generated");
     return { success: true };
   });
 
   // ─── Browser ────────────────────────────────────────────────────────────────
 
   ipcMain.handle("open-external", async (_event, url: string) => {
-    if (typeof url === "string" && (url.startsWith("http:") || url.startsWith("https:"))) {
-      await shell.openExternal(url);
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        await shell.openExternal(url);
+      }
+    } catch {
+      // Invalid URL — ignore
     }
   });
 }
