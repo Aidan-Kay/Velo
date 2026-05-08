@@ -1,26 +1,39 @@
-import { Calendar } from "@/components/ui/calendar";
-import { Card } from "@/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  ArrowUpTrayIcon,
   BanknotesIcon,
   CalendarIcon,
+  ChevronDownIcon,
   ClipboardDocumentListIcon,
+  ClockIcon,
+  CloudArrowUpIcon,
   CurrencyPoundIcon,
+  DocumentPlusIcon,
   ExclamationTriangleIcon,
   ShoppingBagIcon,
 } from "@heroicons/react/20/solid";
+import { Button } from "@shared/components/ui/button";
+import { Calendar } from "@shared/components/ui/calendar";
+import { Card } from "@shared/components/ui/card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@shared/components/ui/dropdown-menu";
+import { Label } from "@shared/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@shared/components/ui/popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@shared/components/ui/tooltip";
 import { endOfMonth, format, isWithinInterval, parseISO, startOfMonth } from "date-fns";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { LocalItem, Order, VintedListing } from "../../../shared/types";
-import { Button } from "../components/ui/button";
-import { Label } from "../components/ui/label";
+import React, { lazy, Suspense, useCallback, useMemo, useRef, useState } from "react";
+import type { LocalItem, Order } from "../../../shared/types";
+import { ProgressModal, type ProgressState } from "../components/ProgressModal";
+import { useItemsSync } from "../context/ItemsSyncContext";
+import { useListingSync } from "../context/ListingSyncContext";
+import { useNotificationSync } from "../context/NotificationSyncContext";
+import { useOrdersSync } from "../context/OrdersSyncContext";
+import { useToast } from "../context/ToastContext";
+import { runBulkOperation } from "../hooks/useBulkOperation";
+import { useGlobalRefresh } from "../hooks/useGlobalRefresh";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface DashboardProps {
   loggedIn: boolean;
-  addToast: (message: string, type?: "success" | "error" | "info") => void;
 }
 
 interface ChartDataPoint {
@@ -58,48 +71,31 @@ function orderNeedsAction(order: Order): boolean {
   return order.status === "needs_action";
 }
 
+const RevenueChart = lazy(() => import("../components/RevenueChart"));
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
-const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [items, setItems] = useState<LocalItem[]>([]);
-  const [listings, setListings] = useState<VintedListing[]>([]);
+const Dashboard: React.FC<DashboardProps> = ({ loggedIn }) => {
+  const { addToast } = useToast();
+  const { orders } = useOrdersSync();
+  const { listingMap, refreshListings, patchListingMap } = useListingSync();
+  const { items, upsertItem } = useItemsSync();
+  const { setHighlight } = useNotificationSync();
+
+  const handleGlobalRefresh = useCallback(() => {
+    void window.api.refreshMyOrders().catch(() => {});
+    refreshListings().catch(() => {});
+  }, [refreshListings]);
+  useGlobalRefresh("dashboard", handleGlobalRefresh);
 
   // Date range — default to current month
   const now = new Date();
   const [dateFrom, setDateFrom] = useState<Date>(startOfMonth(now));
   const [dateTo, setDateTo] = useState<Date>(endOfMonth(now));
 
-  // ─── Load data ──────────────────────────────────────────────────────
-
-  const loadData = useCallback(async () => {
-    try {
-      const [ordersResult, itemsResult, listingsResult] = await Promise.all([
-        window.api.getMyOrders(),
-        window.api.getItems(),
-        window.api.getMyListings(),
-      ]);
-      setOrders(ordersResult.orders);
-      setItems(itemsResult);
-      setListings(listingsResult.items);
-    } catch {
-      addToast("Failed to load dashboard data", "error");
-    }
-  }, [addToast]);
-
-  useEffect(() => {
-    if (loggedIn) loadData();
-  }, [loggedIn, loadData]);
-
-  // Listen for background updates
-  useEffect(() => {
-    const cleanupOrders = window.api.onOrdersUpdated((data) => setOrders(data.orders));
-    const cleanupListings = window.api.onListingsUpdated((data) => setListings(data.items));
-    return () => {
-      cleanupOrders();
-      cleanupListings();
-    };
-  }, []);
+  // Progress state for bulk actions
+  const [progress, setProgress] = useState<ProgressState | null>(null);
+  const cancelledRef = useRef(false);
 
   // ─── Filtered orders for the chosen date range ─────────────────────
 
@@ -134,6 +130,10 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
     return orderCount > 0 ? totalRevenue / orderCount : 0;
   }, [totalRevenue, orderCount]);
 
+  const pendingBalance = useMemo(() => {
+    return orders.filter((o) => o.orderStatus !== "complete" && o.orderStatus !== "cancelled").reduce((sum, o) => sum + orderValue(o), 0);
+  }, [orders]);
+
   // ─── Chart data ────────────────────────────────────────────────────
 
   const chartData = useMemo((): ChartDataPoint[] => {
@@ -160,45 +160,130 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
 
   // ─── Todo lists ────────────────────────────────────────────────────
 
-  /** Priority: Active > Draft > everything else. Higher number wins. */
-  const LISTING_PRIORITY: Record<string, number> = { Active: 3, Draft: 2, Hidden: 1 };
-
-  const listingMap = useMemo(() => {
-    const map = new Map<string, VintedListing>();
-    for (const l of listings) {
-      const key = l.title.toLowerCase().trim();
-      const existing = map.get(key);
-      const newPriority = LISTING_PRIORITY[l.status] ?? 0;
-      const existingPriority = existing ? (LISTING_PRIORITY[existing.status] ?? 0) : -1;
-      if (newPriority > existingPriority) {
-        map.set(key, l);
-      }
-    }
-    return map;
-  }, [listings]);
-
   /** In-stock items that have no associated listing at all. */
   const itemsWithoutListing = useMemo(() => {
-    return items.filter((item) => {
-      if (item.stock <= 0) return false;
-      const listing = listingMap.get(item.title.toLowerCase().trim());
-      return !listing;
-    });
+    return items
+      .filter((item) => {
+        if (item.stock <= 0) return false;
+        const entry = listingMap.get(item.title.toLowerCase().trim());
+        if (!entry) return true;
+        // Sold/Reserved = effectively no current listing (item needs re-listing)
+        return entry.status === "Sold" || entry.status === "Reserved";
+      })
+      .sort((a, b) => a.title.localeCompare(b.title));
   }, [items, listingMap]);
 
   /** Draft listings awaiting publish (items that have a draft listing). */
   const draftsAwaitingPublish = useMemo(() => {
-    return items.filter((item) => {
-      if (item.stock <= 0) return false;
-      const listing = listingMap.get(item.title.toLowerCase().trim());
-      return listing?.status.toLowerCase() === "draft";
-    });
+    return items
+      .filter((item) => {
+        if (item.stock <= 0) return false;
+        const entry = listingMap.get(item.title.toLowerCase().trim());
+        return entry?.status === "Draft";
+      })
+      .sort((a, b) => a.title.localeCompare(b.title));
   }, [items, listingMap]);
 
   /** Orders that need user action. */
   const actionableOrders = useMemo(() => {
     return orders.filter(orderNeedsAction);
   }, [orders]);
+
+  // ─── Bulk actions ──────────────────────────────────────────────────
+
+  const handleBulkListItems = useCallback(
+    async (targetItems: LocalItem[], asDraft: boolean) => {
+      if (!loggedIn) {
+        addToast("Log in to list items", "error");
+        return;
+      }
+      if (targetItems.length === 0) return;
+
+      const settings = await window.api.getSettings();
+      const minMs = (settings.bulkRepost?.minIntervalSeconds ?? 30) * 1000;
+      const maxMs = (settings.bulkRepost?.maxIntervalSeconds ?? 60) * 1000;
+
+      cancelledRef.current = false;
+
+      await runBulkOperation({
+        items: targetItems,
+        title: `Listing ${targetItems.length} item(s)${asDraft ? " as draft" : ""}`,
+        cancelledRef,
+        setProgress,
+        minIntervalMs: minMs,
+        maxIntervalMs: maxMs,
+        action: async (item, updateAction, updateItemStep) => {
+          const photoCount = item.photos?.length ?? 0;
+          const totalSteps = photoCount + 1 + (asDraft ? 0 : 1);
+
+          const cleanup = window.api.onListingCreationProgress(({ step, current }) => {
+            updateItemStep(current, totalSteps);
+            updateAction(step + "…");
+          });
+
+          updateItemStep(1, totalSteps);
+          updateAction(asDraft ? "Listing as draft…" : "Listing on Vinted…");
+          try {
+            const result = await window.api.createListing(item, { asDraft });
+            const created = result as Record<string, unknown>;
+            const vintedItem = (created.item || created) as Record<string, unknown>;
+            const vintedId = (vintedItem.id as number) || 0;
+            patchListingMap(item.title, { status: asDraft ? "Draft" : "Active", id: vintedId });
+            upsertItem({ ...item, updatedAt: new Date().toISOString() });
+          } finally {
+            cleanup();
+          }
+        },
+        onComplete: () => {
+          refreshListings().catch(() => {});
+        },
+      });
+    },
+    [loggedIn, addToast, patchListingMap, upsertItem, refreshListings],
+  );
+
+  const handleBulkPublishDrafts = useCallback(
+    async (targetItems: LocalItem[]) => {
+      if (!loggedIn) {
+        addToast("Log in to publish drafts", "error");
+        return;
+      }
+      if (targetItems.length === 0) return;
+
+      const draftEntries = targetItems
+        .map((item) => {
+          const entry = listingMap.get(item.title.toLowerCase().trim());
+          return entry ? { item, listingId: entry.id, title: item.title } : null;
+        })
+        .filter(Boolean) as { item: LocalItem; listingId: number; title: string }[];
+
+      if (draftEntries.length === 0) return;
+
+      const settings = await window.api.getSettings();
+      const minMs = (settings.bulkRepost?.minIntervalSeconds ?? 30) * 1000;
+      const maxMs = (settings.bulkRepost?.maxIntervalSeconds ?? 60) * 1000;
+
+      cancelledRef.current = false;
+
+      await runBulkOperation({
+        items: draftEntries,
+        title: `Publishing ${draftEntries.length} draft(s)`,
+        cancelledRef,
+        setProgress,
+        minIntervalMs: minMs,
+        maxIntervalMs: maxMs,
+        action: async (entry, updateAction) => {
+          updateAction("Publishing draft…");
+          await window.api.publishListing(entry.listingId);
+          patchListingMap(entry.title, { status: "Active", id: entry.listingId });
+        },
+        onComplete: () => {
+          refreshListings().catch(() => {});
+        },
+      });
+    },
+    [loggedIn, addToast, listingMap, patchListingMap, refreshListings],
+  );
 
   // ─── Render ────────────────────────────────────────────────────────
 
@@ -208,18 +293,14 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold text-foreground">Dashboard</h2>
-
       {/* ─── Date Range ──────────────────────────────────────────────── */}
-      <div className="flex items-end gap-4">
+      <div className="flex gap-4">
         <div className="space-y-1.5">
-          <Label className="text-xs">From</Label>
+          <Label className="text-sm">From</Label>
           <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="w-44 justify-start text-left font-normal">
-                <CalendarIcon className="mr-2 h-4 w-4" />
-                {format(dateFrom, "dd MMM yyyy")}
-              </Button>
+            <PopoverTrigger render={<Button variant="outline" className="w-44 justify-start text-left font-normal" />}>
+              <CalendarIcon className="mr-2 h-4 w-4" />
+              {format(dateFrom, "dd MMM yyyy")}
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar mode="single" selected={dateFrom} onSelect={(d) => d && setDateFrom(d)} initialFocus />
@@ -227,13 +308,11 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
           </Popover>
         </div>
         <div className="space-y-1.5">
-          <Label className="text-xs">To</Label>
+          <Label className="text-sm">To</Label>
           <Popover>
-            <PopoverTrigger asChild>
-              <Button variant="outline" className="w-44 justify-start text-left font-normal">
-                <CalendarIcon className="mr-2 h-4 w-4" />
-                {format(dateTo, "dd MMM yyyy")}
-              </Button>
+            <PopoverTrigger render={<Button variant="outline" className="w-44 justify-start text-left font-normal" />}>
+              <CalendarIcon className="mr-2 h-4 w-4" />
+              {format(dateTo, "dd MMM yyyy")}
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0" align="start">
               <Calendar mode="single" selected={dateTo} onSelect={(d) => d && setDateTo(d)} initialFocus />
@@ -243,11 +322,11 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
       </div>
 
       {/* ─── Stats Cards ─────────────────────────────────────────────── */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <Card className="p-5 space-y-1">
           <div className="flex items-center gap-2 text-muted-foreground">
             <BanknotesIcon className="w-4 h-4" />
-            <span className="text-xs font-medium uppercase tracking-wide">Total Revenue</span>
+            <span className="text-sm font-medium">Total Revenue</span>
           </div>
           <p className="text-2xl font-bold text-foreground">
             {currencySymbol}
@@ -258,7 +337,7 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
         <Card className="p-5 space-y-1">
           <div className="flex items-center gap-2 text-muted-foreground">
             <ShoppingBagIcon className="w-4 h-4" />
-            <span className="text-xs font-medium uppercase tracking-wide">Orders</span>
+            <span className="text-sm font-medium">Orders</span>
           </div>
           <p className="text-2xl font-bold text-foreground">{orderCount}</p>
         </Card>
@@ -266,11 +345,22 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
         <Card className="p-5 space-y-1">
           <div className="flex items-center gap-2 text-muted-foreground">
             <CurrencyPoundIcon className="w-4 h-4" />
-            <span className="text-xs font-medium uppercase tracking-wide">Avg. Order Value</span>
+            <span className="text-sm font-medium">Avg. Order Value</span>
           </div>
           <p className="text-2xl font-bold text-foreground">
             {currencySymbol}
             {averageOrderValue.toFixed(2)}
+          </p>
+        </Card>
+
+        <Card className="p-5 space-y-1">
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <ClockIcon className="w-4 h-4" />
+            <span className="text-sm font-medium">Pending Balance</span>
+          </div>
+          <p className="text-2xl font-bold text-foreground">
+            {currencySymbol}
+            {pendingBalance.toFixed(2)}
           </p>
         </Card>
       </div>
@@ -279,46 +369,9 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
       <Card className="p-5 space-y-3">
         <h3 className="text-sm font-medium text-foreground">Order Value Over Time</h3>
         {chartData.length > 0 ? (
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                <defs>
-                  <linearGradient id="revenueGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.02} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" strokeOpacity={0.5} />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval="preserveStartEnd"
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: "var(--muted-foreground)" }}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(v) => `${currencySymbol}${v}`}
-                  width={60}
-                />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "var(--card)",
-                    border: "1px solid var(--border)",
-                    borderRadius: "0.5rem",
-                    fontSize: "12px",
-                    color: "var(--foreground)",
-                  }}
-                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                  formatter={((value: any) => [`${currencySymbol}${Number(value).toFixed(2)}`, "Revenue"]) as any}
-                  labelStyle={{ color: "var(--muted-foreground)" }}
-                />
-                <Area type="monotone" dataKey="value" stroke="var(--chart-1)" strokeWidth={2} fill="url(#revenueGradient)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
+          <Suspense fallback={<div className="h-64 animate-pulse bg-muted rounded" />}>
+            <RevenueChart data={chartData} currencySymbol={currencySymbol} />
+          </Suspense>
         ) : (
           <p className="text-sm text-muted-foreground py-8 text-center">No orders in this period</p>
         )}
@@ -330,10 +383,21 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
         <Card className="p-5 space-y-3">
           <div className="flex items-center gap-2">
             <ClipboardDocumentListIcon className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-sm font-medium text-foreground">In Stock Items Without Listing</h3>
+            <h3 className="text-sm font-medium text-foreground flex-1">In Stock Items Without Listing</h3>
+            {itemsWithoutListing.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger render={<Button variant="outline" className="h-6 px-2 text-xs" />}>
+                  Actions <ChevronDownIcon className="w-3 h-3 ml-1" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleBulkListItems(itemsWithoutListing, false)}>List items</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleBulkListItems(itemsWithoutListing, true)}>List items as draft</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
           {itemsWithoutListing.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-4 text-center">All in-stock items have a listing</p>
+            <p className="text-sm text-muted-foreground py-4 text-center">All in-stock items have a listing</p>
           ) : (
             <ul className="space-y-1.5 max-h-64 overflow-y-auto">
               {itemsWithoutListing.map((item) => (
@@ -344,7 +408,22 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
                     </div>
                   )}
                   <span className="truncate flex-1">{item.title}</span>
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">Stock: {item.stock}</span>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Button variant="ghost" className="h-6 w-6 p-0 flex-shrink-0" onClick={() => handleBulkListItems([item], false)}>
+                        <ArrowUpTrayIcon className="w-4 h-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>List item</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Button variant="ghost" className="h-6 w-6 p-0 flex-shrink-0" onClick={() => handleBulkListItems([item], true)}>
+                        <DocumentPlusIcon className="w-4 h-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>List as draft</TooltipContent>
+                  </Tooltip>
                 </li>
               ))}
             </ul>
@@ -355,10 +434,20 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
         <Card className="p-5 space-y-3">
           <div className="flex items-center gap-2">
             <ClipboardDocumentListIcon className="w-4 h-4 text-muted-foreground" />
-            <h3 className="text-sm font-medium text-foreground">Drafts Awaiting Publish</h3>
+            <h3 className="text-sm font-medium text-foreground flex-1">Drafts Awaiting Publish</h3>
+            {draftsAwaitingPublish.length > 0 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger render={<Button variant="outline" className="h-6 px-2 text-xs" />}>
+                  Actions <ChevronDownIcon className="w-3 h-3 ml-1" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => handleBulkPublishDrafts(draftsAwaitingPublish)}>Publish drafts</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
           {draftsAwaitingPublish.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-4 text-center">No draft listings awaiting publish</p>
+            <p className="text-sm text-muted-foreground py-4 text-center">No draft listings awaiting publish</p>
           ) : (
             <ul className="space-y-1.5 max-h-64 overflow-y-auto">
               {draftsAwaitingPublish.map((item) => (
@@ -369,7 +458,14 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
                     </div>
                   )}
                   <span className="truncate flex-1">{item.title}</span>
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">Stock: {item.stock}</span>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Button variant="ghost" className="h-6 w-6 p-0 flex-shrink-0" onClick={() => handleBulkPublishDrafts([item])}>
+                        <CloudArrowUpIcon className="w-4 h-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Publish draft</TooltipContent>
+                  </Tooltip>
                 </li>
               ))}
             </ul>
@@ -383,11 +479,19 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
             <h3 className="text-sm font-medium text-foreground">Orders Needing Action</h3>
           </div>
           {actionableOrders.length === 0 ? (
-            <p className="text-xs text-muted-foreground py-4 text-center">No orders need your attention</p>
+            <p className="text-sm text-muted-foreground py-4 text-center">No orders need your attention</p>
           ) : (
             <ul className="space-y-1.5 max-h-64 overflow-y-auto">
               {actionableOrders.map((order) => (
-                <li key={order.id} className="flex items-center gap-2 text-sm">
+                <li
+                  key={order.id}
+                  className="flex items-center gap-2 text-sm cursor-pointer hover:bg-accent rounded px-1 -mx-1 transition-colors"
+                  onClick={() => {
+                    if (order.transactionId != null) {
+                      setHighlight({ page: "orders", referenceId: order.transactionId });
+                    }
+                  }}
+                >
                   {order.itemThumbnail && (
                     <div className="w-7 h-7 rounded bg-muted overflow-hidden flex-shrink-0">
                       <img src={order.itemThumbnail} alt="" className="w-full h-full object-cover" />
@@ -401,8 +505,10 @@ const Dashboard: React.FC<DashboardProps> = ({ loggedIn, addToast }) => {
           )}
         </Card>
       </div>
+
+      {progress && <ProgressModal progress={progress} onClose={() => setProgress(null)} />}
     </div>
   );
 };
 
-export default Dashboard;
+export default React.memo(Dashboard);

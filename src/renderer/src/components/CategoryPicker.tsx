@@ -1,6 +1,6 @@
+import { Input } from "@shared/components/ui/input";
 import React, { useEffect, useMemo, useState } from "react";
 import type { CategoryNode } from "../../../shared/types";
-import { Input } from "./ui/input";
 
 interface CategoryPickerProps {
   categories: CategoryNode[];

@@ -16,13 +16,16 @@ export { resetClientWindow } from "./lib/requester";
 export {
   createListing,
   deleteListing,
+  editListingPrice,
   getItemUploadDetail,
   getListingAsVintedListing,
   getListingDetails,
   getMyListings,
   publishListing,
 } from "./listings";
-export { getConversation, getMyOrders, getTransactionDetail } from "./orders";
+export { getInbox } from "./messaging";
+export { acceptOffer, counterOffer, getReceivedOffers, getSellerOfferOptions } from "./offers";
+export { getConversation, getMyOrders, getMyPurchases, getTransactionDetail } from "./orders";
 export {
   getDefaultShippingAddress,
   getJourneySummary,

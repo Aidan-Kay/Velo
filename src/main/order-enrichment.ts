@@ -1,60 +1,31 @@
-import type { JourneySummaryResult, Order, TransactionDetail } from "../shared/types";
+import type { JourneySummaryResult, Order, Purchase, TransactionDetail } from "../shared/types";
 import * as vintedApi from "./vinted/api";
 
 /**
- * Enrich an order with transaction detail, shipping instructions, and journey summary.
- * Shipping instructions and journey summary are fetched in parallel where possible (#16).
+ * Shared transaction enrichment for both seller-side orders and buyer-side
+ * purchases. The two sides differ only in which counterparty is "interesting"
+ * (buyer for orders, seller for purchases).
  */
-export async function enrichOrder(order: Order, domain: string): Promise<Order> {
-  if (!order.transactionId) return order;
 
-  const detail: TransactionDetail = await vintedApi.getTransactionDetail(order.transactionId, domain);
-
-  // Fetch shipping instructions and journey summary in parallel
-  const [shippingResult, journeyResult] = await Promise.allSettled([
-    fetchShippingInfo(order.transactionId, domain),
-    detail.shipment?.id ? vintedApi.getJourneySummary(order.transactionId, domain) : Promise.resolve(null),
-  ]);
-
-  const shipping = shippingResult.status === "fulfilled" ? shippingResult.value : null;
-  if (shippingResult.status === "rejected") {
-    console.warn(`[enrichment] Shipping instructions unavailable for ${order.transactionId}:`, shippingResult.reason?.message);
-  }
-
-  const journey: JourneySummaryResult | null = journeyResult.status === "fulfilled" ? journeyResult.value : null;
-  if (journeyResult.status === "rejected") {
-    console.warn(`[enrichment] Journey summary unavailable for ${order.transactionId}:`, journeyResult.reason?.message);
-  }
-
-  const buyerId = detail.buyer?.id || order.buyerId;
-  const buyerUsername = detail.buyer?.login || order.buyerUsername;
-  const buyerProfileUrl = buyerId && buyerUsername ? `https://${domain}/member/${buyerId}-${buyerUsername}` : order.buyerProfileUrl;
-
-  return {
-    ...order,
-    buyerId,
-    buyerUsername,
-    buyerProfileUrl,
-    buyerAvatar: detail.buyer?.photo?.url || order.buyerAvatar,
-    courier: detail.shipment?.carrier_code || shipping?.courier || order.courier,
-    trackingNumber: journey?.trackingCode || detail.shipment?.tracking_code || order.trackingNumber,
-    trackingUrl: journey?.trackingUrl || detail.shipment?.tracking_url || order.trackingUrl,
-    shipmentId: detail.shipment?.id || order.shipmentId,
-    shipmentStatus: detail.shipment?.status ?? order.shipmentStatus ?? null,
-    carrierLogoUrl: journey?.carrierLogoUrl || shipping?.carrierLogo || order.carrierLogoUrl,
-    estimatedDelivery: journey?.estimatedDelivery || order.estimatedDelivery,
-    isBundle: Array.isArray(detail.order?.items) && detail.order.items.length > 1,
-    bundleItems:
-      Array.isArray(detail.order?.items) && detail.order.items.length > 1
-        ? detail.order.items.map((item) => ({
-            title: item.title || "",
-            thumbnail: item.photos?.[0]?.thumbnails?.find((t) => t.type === "thumb150x210")?.url || null,
-          }))
-        : order.bundleItems,
-  };
+interface CounterpartyFields {
+  id: number | null;
+  username: string;
+  avatar: string | null;
+  profileUrl: string | null;
 }
 
-/** Fetch shipping instructions and extract courier info. */
+interface CommonEnrichment {
+  courier: string;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  shipmentId: number | null;
+  shipmentStatus: number | null;
+  carrierLogoUrl: string | null;
+  estimatedDelivery: string | null;
+  isBundle: boolean;
+  bundleItems: Array<{ title: string; thumbnail: string | null }>;
+}
+
 async function fetchShippingInfo(transactionId: number, domain: string): Promise<{ courier: string | null; carrierLogo: string | null }> {
   const instructions = (await vintedApi.getShippingInstructions(transactionId, domain)) as {
     shipping_instructions?: { carrier?: { name?: string; icon_url?: string } };
@@ -65,7 +36,111 @@ async function fetchShippingInfo(transactionId: number, domain: string): Promise
   };
 }
 
-/** Pick only enrichment fields from a cached order (to preserve when API call fails). */
+function buildCommonEnrichment(
+  detail: TransactionDetail,
+  journey: JourneySummaryResult | null,
+  shippingCourier: string | null,
+  shippingCarrierLogo: string | null,
+  fallback: CommonEnrichment,
+): CommonEnrichment {
+  const items = detail.order?.items;
+  const isBundle = Array.isArray(items) && items.length > 1;
+
+  return {
+    courier: detail.shipment?.carrier_code || shippingCourier || fallback.courier,
+    trackingNumber: journey?.trackingCode || detail.shipment?.tracking_code || fallback.trackingNumber,
+    trackingUrl: journey?.trackingUrl || detail.shipment?.tracking_url || fallback.trackingUrl,
+    shipmentId: detail.shipment?.id || fallback.shipmentId,
+    shipmentStatus: detail.shipment?.status ?? fallback.shipmentStatus ?? null,
+    carrierLogoUrl: journey?.carrierLogoUrl || shippingCarrierLogo || fallback.carrierLogoUrl,
+    estimatedDelivery: journey?.estimatedDelivery || fallback.estimatedDelivery,
+    isBundle,
+    bundleItems: isBundle
+      ? items!.map((item) => ({
+          title: item.title || "",
+          thumbnail: item.photos?.[0]?.thumbnails?.find((t) => t.type === "thumb150x210")?.url || null,
+        }))
+      : fallback.bundleItems,
+  };
+}
+
+function extractCounterparty(
+  party: TransactionDetail["buyer"] | TransactionDetail["seller"],
+  domain: string,
+  fallback: { id: number | null; username: string; avatar: string | null; profileUrl: string | null },
+): CounterpartyFields {
+  const id = party?.id ?? fallback.id;
+  const username = party?.login ?? fallback.username;
+  const avatar = party?.photo?.url ?? fallback.avatar;
+  const profileUrl = id && username ? `https://${domain}/member/${id}-${username}` : fallback.profileUrl;
+  return { id, username, avatar, profileUrl };
+}
+
+async function fetchEnrichment(
+  transactionId: number,
+  domain: string,
+  options: { fetchShipping: boolean },
+): Promise<{
+  detail: TransactionDetail;
+  journey: JourneySummaryResult | null;
+  shippingCourier: string | null;
+  shippingCarrierLogo: string | null;
+}> {
+  const detail: TransactionDetail = await vintedApi.getTransactionDetail(transactionId, domain);
+
+  const [shippingResult, journeyResult] = await Promise.allSettled([
+    options.fetchShipping ? fetchShippingInfo(transactionId, domain) : Promise.resolve(null),
+    detail.shipment?.id ? vintedApi.getJourneySummary(transactionId, domain) : Promise.resolve(null),
+  ]);
+
+  let shippingCourier: string | null = null;
+  let shippingCarrierLogo: string | null = null;
+  if (shippingResult.status === "fulfilled" && shippingResult.value) {
+    shippingCourier = shippingResult.value.courier;
+    shippingCarrierLogo = shippingResult.value.carrierLogo;
+  } else if (shippingResult.status === "rejected") {
+    console.warn(`[enrichment] Shipping instructions unavailable for ${transactionId}:`, shippingResult.reason?.message);
+  }
+
+  const journey = journeyResult.status === "fulfilled" ? (journeyResult.value as JourneySummaryResult | null) : null;
+  if (journeyResult.status === "rejected") {
+    console.warn(
+      `[enrichment] Journey summary unavailable for ${transactionId}:`,
+      (journeyResult as PromiseRejectedResult).reason?.message,
+    );
+  }
+
+  return { detail, journey, shippingCourier, shippingCarrierLogo };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export async function enrichOrder(order: Order, domain: string): Promise<Order> {
+  if (!order.transactionId) return order;
+
+  const { detail, journey, shippingCourier, shippingCarrierLogo } = await fetchEnrichment(order.transactionId, domain, {
+    fetchShipping: true,
+  });
+
+  const buyer = extractCounterparty(detail.buyer, domain, {
+    id: order.buyerId,
+    username: order.buyerUsername,
+    avatar: order.buyerAvatar,
+    profileUrl: order.buyerProfileUrl ?? null,
+  });
+
+  const common = buildCommonEnrichment(detail, journey, shippingCourier, shippingCarrierLogo, order);
+
+  return {
+    ...order,
+    buyerId: buyer.id,
+    buyerUsername: buyer.username,
+    buyerAvatar: buyer.avatar,
+    buyerProfileUrl: buyer.profileUrl,
+    ...common,
+  };
+}
+
 export function pickEnrichmentFields(cached: Order): Partial<Order> {
   return {
     buyerId: cached.buyerId,
@@ -83,5 +158,47 @@ export function pickEnrichmentFields(cached: Order): Partial<Order> {
     bundleItems: cached.bundleItems,
     stockReplenished: cached.stockReplenished,
     stockReduced: cached.stockReduced,
+  };
+}
+
+export async function enrichPurchase(purchase: Purchase, domain: string): Promise<Purchase> {
+  if (!purchase.transactionId) return purchase;
+
+  const { detail, journey } = await fetchEnrichment(purchase.transactionId, domain, { fetchShipping: false });
+
+  const seller = extractCounterparty(detail.seller, domain, {
+    id: purchase.sellerId,
+    username: purchase.sellerUsername,
+    avatar: purchase.sellerAvatar,
+    profileUrl: purchase.sellerProfileUrl,
+  });
+
+  const common = buildCommonEnrichment(detail, journey, null, null, purchase);
+
+  return {
+    ...purchase,
+    sellerId: seller.id,
+    sellerUsername: seller.username,
+    sellerAvatar: seller.avatar,
+    sellerProfileUrl: seller.profileUrl,
+    ...common,
+  };
+}
+
+export function pickPurchaseEnrichmentFields(cached: Purchase): Partial<Purchase> {
+  return {
+    sellerId: cached.sellerId,
+    sellerUsername: cached.sellerUsername,
+    sellerProfileUrl: cached.sellerProfileUrl,
+    sellerAvatar: cached.sellerAvatar,
+    courier: cached.courier,
+    trackingNumber: cached.trackingNumber,
+    trackingUrl: cached.trackingUrl,
+    shipmentId: cached.shipmentId,
+    shipmentStatus: cached.shipmentStatus,
+    carrierLogoUrl: cached.carrierLogoUrl,
+    estimatedDelivery: cached.estimatedDelivery,
+    isBundle: cached.isBundle,
+    bundleItems: cached.bundleItems,
   };
 }

@@ -1,39 +1,66 @@
-import React, { useCallback, useEffect, useState } from "react";
+import { TooltipProvider } from "@shared/components/ui/tooltip";
+import React, { Suspense, lazy, useCallback, useEffect, useTransition, useState } from "react";
+import NotificationBell from "./components/NotificationBell";
 import Sidebar from "./components/Sidebar";
-import Toast, { ToastData } from "./components/Toast";
-import { TooltipProvider } from "./components/ui/tooltip";
+import { ItemsSyncProvider } from "./context/ItemsSyncContext";
 import { ListingSyncProvider } from "./context/ListingSyncContext";
-import Dashboard from "./pages/Dashboard";
-import Items from "./pages/Items";
-import Listings from "./pages/Listings";
-import Orders from "./pages/Orders";
-import Settings from "./pages/Settings";
+import { NotificationSyncProvider } from "./context/NotificationSyncContext";
+import { OffersSyncProvider } from "./context/OffersSyncContext";
+import { OrdersSyncProvider } from "./context/OrdersSyncContext";
+import { PurchasesSyncProvider } from "./context/PurchasesSyncContext";
+import { ToastProvider, useToast } from "./context/ToastContext";
 
-type Page = "dashboard" | "listings" | "items" | "orders" | "settings";
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Listings = lazy(() => import("./pages/Listings"));
+const Items = lazy(() => import("./pages/Items"));
+const Orders = lazy(() => import("./pages/Orders"));
+const Purchases = lazy(() => import("./pages/Purchases"));
+const Offers = lazy(() => import("./pages/Offers"));
+const Settings = lazy(() => import("./pages/Settings"));
+const ActivityLog = lazy(() => import("./pages/ActivityLog"));
 
-let toastIdCounter = 0;
+const PageLoadingSpinner: React.FC = () => (
+  <div className="flex items-center justify-center py-16">
+    <svg className="animate-spin h-6 w-6 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+    </svg>
+  </div>
+);
 
-const App: React.FC = () => {
+type Page = "dashboard" | "listings" | "items" | "orders" | "purchases" | "offers" | "settings" | "activity";
+
+const PAGE_LABELS: Record<Page, string> = {
+  dashboard: "Dashboard",
+  listings: "Listings",
+  items: "Items",
+  orders: "Orders",
+  purchases: "Purchases",
+  offers: "Offers",
+  settings: "Settings",
+  activity: "Activity Log",
+};
+
+const AppContent: React.FC = () => {
+  const [displayPage, setDisplayPage] = useState<Page>("dashboard");
   const [page, setPage] = useState<Page>("dashboard");
+  const [isPending, startTransition] = useTransition();
+
+  const navigatePage = useCallback((next: Page) => {
+    setDisplayPage(next);
+  }, []);
+
+  // Defer page content rendering so sidebar paints its active state first
+  useEffect(() => {
+    if (displayPage === page) return;
+    startTransition(() => {
+      setPage(displayPage);
+    });
+  }, [displayPage, page]);
   const [loggedIn, setLoggedIn] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
-  const [toasts, setToasts] = useState<ToastData[]>([]);
-
-  // ─── Toast helpers ──────────────────────────────────────────────────────
-  const addToast = useCallback((message: string, type: "success" | "error" | "info" = "info", duration = 4000) => {
-    const id = ++toastIdCounter;
-    const toast: ToastData = { id, message, type };
-    setToasts((prev) => [...prev, toast]);
-    if (duration > 0) {
-      setTimeout(() => {
-        setToasts((prev) => prev.filter((t) => t.id !== id));
-      }, duration);
-    }
-  }, []);
-
-  const removeToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
+  const { addToast } = useToast();
 
   // ─── Login / logout ────────────────────────────────────────────────────
   const handleLogin = useCallback(async () => {
@@ -59,7 +86,7 @@ const App: React.FC = () => {
       await window.api.logout();
       setLoggedIn(false);
       addToast("Logged out", "info");
-      setPage("dashboard");
+      navigatePage("dashboard");
     } catch {
       addToast("Logout failed", "error");
     }
@@ -67,9 +94,15 @@ const App: React.FC = () => {
 
   // ─── Check session on mount ─────────────────────────────────────────────
   useEffect(() => {
-    window.api.checkSession().then((result) => {
-      setLoggedIn(result.loggedIn);
-    });
+    window.api
+      .checkSession()
+      .then((result) => {
+        setLoggedIn(result.loggedIn);
+        setCheckingSession(false);
+      })
+      .catch(() => {
+        setCheckingSession(false);
+      });
   }, []);
 
   // ─── Apply persisted dark mode on mount ────────────────────────────────
@@ -101,52 +134,126 @@ const App: React.FC = () => {
     };
   }, [addToast]);
 
-  // ─── Render page ───────────────────────────────────────────────────────
-  const renderPage = () => {
-    switch (page) {
-      case "dashboard":
-        return <Dashboard loggedIn={loggedIn} addToast={addToast} />;
-      case "listings":
-        return <Listings loggedIn={loggedIn} addToast={addToast} />;
-      case "items":
-        return <Items loggedIn={loggedIn} addToast={addToast} />;
-      case "orders":
-        return <Orders loggedIn={loggedIn} addToast={addToast} />;
-      case "settings":
-        return <Settings addToast={addToast} />;
-    }
-  };
+  // ─── Global keyboard shortcuts ─────────────────────────────────────────
+  useEffect(() => {
+    const PAGE_KEYS: Record<string, Page> = {
+      d: "dashboard",
+      l: "listings",
+      i: "items",
+      o: "orders",
+      p: "purchases",
+      f: "offers",
+      s: "settings",
+      a: "activity",
+    };
+
+    const isEditableTarget = (el: Element | null): boolean => {
+      if (!el) return false;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return true;
+      if (el instanceof HTMLElement && el.isContentEditable) return true;
+      return false;
+    };
+
+    const handler = (e: KeyboardEvent): void => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const editable = isEditableTarget(document.activeElement);
+
+      // "/" always focuses search and prevents the literal "/" being typed,
+      // even when an input is focused (lets the user jump between search bars).
+      if (e.key === "/") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("app:focus-search", { detail: { page: displayPage } }));
+        return;
+      }
+
+      if (editable) return;
+
+      const key = e.key.toLowerCase();
+      if (key in PAGE_KEYS) {
+        e.preventDefault();
+        setDisplayPage(PAGE_KEYS[key]);
+        return;
+      }
+      if (key === "r") {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("app:refresh", { detail: { page: displayPage } }));
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [displayPage]);
 
   return (
-    <TooltipProvider delayDuration={200}>
-      <div className="flex flex-col h-screen overflow-hidden">
-        {/* Custom titlebar drag region */}
-        <div className="titlebar" />
+    <TooltipProvider delay={200}>
+      <NotificationSyncProvider onNavigate={(p) => navigatePage(p as Page)}>
+        <div className="flex flex-col h-screen overflow-hidden">
+          {/* Custom titlebar drag region — page title centred, controls on right */}
+          <div className="titlebar flex items-center justify-end border-b border-border/50 pr-[140px] relative">
+            <span className="text-sm font-semibold text-foreground select-none absolute left-1/2 -translate-x-1/2">{PAGE_LABELS[displayPage]}</span>
+            <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
+              <NotificationBell />
+            </div>
+          </div>
 
-        <div className="flex flex-1 min-h-0">
-          <Sidebar
-            currentPage={page}
-            onNavigate={setPage}
-            loggedIn={loggedIn}
-            loggingIn={loggingIn}
-            onLogin={handleLogin}
-            onLogout={handleLogout}
-          />
+          <div className="flex flex-1 min-h-0">
+            <Sidebar
+              currentPage={displayPage}
+              onNavigate={navigatePage}
+              loggedIn={loggedIn}
+              checkingSession={checkingSession}
+              loggingIn={loggingIn}
+              onLogin={handleLogin}
+              onLogout={handleLogout}
+            />
 
-          <main className="flex-1 overflow-y-auto p-6">
-            <ListingSyncProvider loggedIn={loggedIn}>{renderPage()}</ListingSyncProvider>
-          </main>
+            <main className="relative flex-1 overflow-hidden">
+              <ListingSyncProvider loggedIn={loggedIn}>
+                <OrdersSyncProvider loggedIn={loggedIn}>
+                  <PurchasesSyncProvider loggedIn={loggedIn}>
+                    <OffersSyncProvider loggedIn={loggedIn}>
+                      <ItemsSyncProvider>
+                        <Suspense
+                          fallback={
+                            <div className="page-container flex items-center justify-center">
+                              <PageLoadingSpinner />
+                            </div>
+                          }
+                        >
+                          <div className="page-container relative">
+                            {isPending && (
+                              <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
+                                <PageLoadingSpinner />
+                              </div>
+                            )}
+                            {page === "dashboard" && <Dashboard loggedIn={loggedIn} />}
+                            {page === "listings" && <Listings loggedIn={loggedIn} />}
+                            {page === "items" && <Items loggedIn={loggedIn} />}
+                            {page === "orders" && <Orders loggedIn={loggedIn} isActive />}
+                            {page === "purchases" && <Purchases loggedIn={loggedIn} />}
+                            {page === "offers" && <Offers loggedIn={loggedIn} isActive />}
+                            {page === "settings" && <Settings />}
+                            {page === "activity" && <ActivityLog />}
+                          </div>
+                        </Suspense>
+                      </ItemsSyncProvider>
+                    </OffersSyncProvider>
+                  </PurchasesSyncProvider>
+                </OrdersSyncProvider>
+              </ListingSyncProvider>
+            </main>
+          </div>
         </div>
-      </div>
-
-      {/* Toast stack — z-[100] keeps toasts above any modal overlays (z-50) */}
-      <div className="fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
-        {toasts.map((t) => (
-          <Toast key={t.id} toast={t} onDismiss={removeToast} />
-        ))}
-      </div>
+      </NotificationSyncProvider>
     </TooltipProvider>
   );
 };
+
+const App: React.FC = () => (
+  <ToastProvider>
+    <AppContent />
+  </ToastProvider>
+);
 
 export default App;

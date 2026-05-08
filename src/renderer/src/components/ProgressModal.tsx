@@ -1,4 +1,5 @@
-import { Button } from "./ui/button";
+import { Button } from "@shared/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@shared/components/ui/dialog";
 
 export interface ProgressState {
   title: string;
@@ -24,23 +25,30 @@ export function ProgressModal({ progress, onClose }: ProgressModalProps) {
   const itemPct = progress.itemStep && progress.itemStepTotal ? Math.round((progress.itemStep / progress.itemStepTotal) * 100) : 0;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-card rounded-lg border border-border p-6 w-full max-w-md space-y-4">
-        <h3 className="text-sm font-semibold text-foreground">{progress.title}</h3>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && progress.done) onClose();
+      }}
+    >
+      <DialogContent className="max-w-md" showCloseButton={progress.done}>
+        <DialogHeader>
+          <DialogTitle className="text-sm font-semibold">{progress.title}</DialogTitle>
+        </DialogHeader>
 
         {/* Overall progress bar */}
         <div className="w-full bg-neutral-700 rounded-full h-2 overflow-hidden">
           <div className="bg-primary h-full rounded-full transition-all duration-300" style={{ width: `${pct}%` }} />
         </div>
 
-        <p className="text-xs text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {progress.completed} / {progress.total} completed
           {progress.failed > 0 && <span className="text-red-400 ml-1">· {progress.failed} failed</span>}
         </p>
 
         {!progress.done && (
-          <div className="space-y-2">
-            {progress.currentTitle && <p className="text-xs text-foreground font-medium truncate">{progress.currentTitle}</p>}
+          <div className="space-y-2 min-w-0">
+            {progress.currentTitle && <p className="text-sm text-foreground font-medium truncate">{progress.currentTitle}</p>}
 
             {/* Individual item progress bar */}
             {progress.itemStep != null && progress.itemStepTotal != null && progress.itemStepTotal > 0 && (
@@ -49,18 +57,16 @@ export function ProgressModal({ progress, onClose }: ProgressModalProps) {
               </div>
             )}
 
-            {progress.currentAction && <p className="text-xs text-muted-foreground truncate">{progress.currentAction}</p>}
+            {progress.currentAction && <p className="text-sm text-muted-foreground truncate">{progress.currentAction}</p>}
           </div>
         )}
 
         {progress.done && (
-          <div className="flex justify-end pt-2">
-            <Button size="sm" onClick={onClose}>
-              Close
-            </Button>
-          </div>
+          <DialogFooter>
+            <Button onClick={onClose}>Close</Button>
+          </DialogFooter>
         )}
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

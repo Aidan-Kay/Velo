@@ -9,7 +9,10 @@ import { loadRelistQueue, saveRelistQueue } from "./persistence";
  */
 
 interface RelistingDeps {
-  getSettings: () => { relisting?: { enabled?: boolean; listAsDraft?: boolean; delayMinutes?: number } };
+  getSettings: () => {
+    relisting?: { enabled?: boolean; listAsDraft?: boolean; delayMinutes?: number };
+    relistScheduledStart?: { enabled?: boolean; time?: string | null };
+  };
   onRelist: (itemId: string, asDraft: boolean) => Promise<void>;
 }
 
@@ -78,11 +81,28 @@ export class RelistingManager {
     const delayMs = (relistSettings.delayMinutes || 30) * 60 * 1000;
     const now = Date.now();
 
+    // Optional wall-clock gate: defer the next due relist until a configured
+    // local "HH:MM" time today (or tomorrow if that has already passed).
+    const sched = settings.relistScheduledStart;
+    let scheduledTs: number | null = null;
+    if (sched?.enabled && sched.time && /^\d{2}:\d{2}$/.test(sched.time)) {
+      const [h, m] = sched.time.split(":").map((s) => parseInt(s, 10));
+      if (!Number.isNaN(h) && !Number.isNaN(m) && h >= 0 && h < 24 && m >= 0 && m < 60) {
+        const today = new Date();
+        today.setHours(h, m, 0, 0);
+        scheduledTs = today.getTime();
+        if (scheduledTs <= now) scheduledTs = null;
+      }
+    }
+
     for (const entry of this.queue) {
       if (entry.status !== "pending") continue;
 
       const soldTime = new Date(entry.soldAt).getTime();
-      const relistTime = soldTime + delayMs;
+      let relistTime = soldTime + delayMs;
+      if (scheduledTs !== null && relistTime < scheduledTs) {
+        relistTime = scheduledTs;
+      }
 
       entry.relistAt = new Date(relistTime).toISOString();
 

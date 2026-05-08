@@ -1,4 +1,4 @@
-import type { Order, OrderStage, OrderStatus, VintedListing } from "../../shared/types";
+import type { Order, OrderStage, OrderStatus, Purchase, VintedListing } from "../../shared/types";
 import { CURRENCY_SYMBOLS } from "../shared/constants";
 
 // ─── Raw API response types ────────────────────────────────────────────────
@@ -213,6 +213,49 @@ export function normalizeOrder(raw: RawOrderEntry, domain: string): Order {
     buyerId: null,
     buyerUsername: "—",
     buyerAvatar: null,
+    courier: "—",
+    trackingNumber: null,
+    trackingUrl: null,
+    shipmentId: null,
+    shipmentStatus: null,
+    carrierLogoUrl: null,
+    estimatedDelivery: null,
+    status: deriveOrderStatus(raw.transaction_user_status, raw.status),
+    orderStatus: deriveOrderStage(raw.status),
+    statusLabel: raw.status || "",
+    createdAt: raw.date || null,
+    completedAt: null,
+    isBundle: false,
+    bundleItems: [],
+  };
+}
+
+/** Map a raw order entry (purchased perspective) to our Purchase shape. */
+export function normalizePurchase(raw: RawOrderEntry, domain: string): Purchase {
+  const priceAmount = raw.price?.amount != null ? parseFloat(raw.price.amount) : null;
+  const currency = raw.price?.currency_code || "GBP";
+  const currencySymbol = CURRENCY_SYMBOLS[currency] || currency + " ";
+
+  const thumbnail =
+    raw.photo?.thumbnails?.find((t) => t.type === "thumb310x430")?.url ||
+    raw.photo?.thumbnails?.find((t) => t.type === "thumb150x210")?.url ||
+    raw.photo?.url ||
+    null;
+
+  return {
+    id: raw.transaction_id || raw.conversation_id || -simpleHash(`${raw.title}-${raw.date}`),
+    transactionId: raw.transaction_id || null,
+    conversationId: raw.conversation_id || null,
+    conversationUrl: raw.conversation_id ? `https://${domain}/inbox/${raw.conversation_id}` : null,
+    itemTitle: raw.title || "Unknown Item",
+    itemThumbnail: thumbnail,
+    price: priceAmount != null ? `${currencySymbol}${priceAmount.toFixed(2)}` : null,
+    priceNumeric: priceAmount,
+    currency,
+    sellerId: null,
+    sellerUsername: "—",
+    sellerAvatar: null,
+    sellerProfileUrl: null,
     courier: "—",
     trackingNumber: null,
     trackingUrl: null,

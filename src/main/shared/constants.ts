@@ -11,9 +11,14 @@ export const CURRENCY_SYMBOLS: Record<string, string> = {
   RON: "lei",
 };
 
-export const DEFAULT_DOMAIN = "www.vinted.co.uk";
+/** Vinted site codes (TLD suffix). Add a new entry to support a new locale. */
+export const VINTED_SITES = ["fr", "co.uk", "de", "nl", "be", "es", "it", "pt", "pl", "cz", "lt", "se", "com"] as const;
+export type Site = (typeof VINTED_SITES)[number];
+
+export const DEFAULT_SITE: Site = "co.uk";
+export const DEFAULT_DOMAIN = `www.vinted.${DEFAULT_SITE}`;
 
 /** Resolve the Vinted domain for a given site code (TLD-style, e.g. "co.uk", "fr"). */
-export function getDomain(site: string): string {
+export function getDomain(site: Site | string): string {
   return `www.vinted.${site}`;
 }

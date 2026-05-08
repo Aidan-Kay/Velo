@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import type { Pagination, VintedListing } from "../../../shared/types";
+import type { ListingDelta, Pagination, VintedListing } from "../../../shared/types";
 
 /** Priority: Active > Draft > everything else. Higher = better. */
 const LISTING_STATUS_PRIORITY: Record<string, number> = {
@@ -71,11 +71,31 @@ export const ListingSyncProvider: React.FC<ListingSyncProviderProps> = ({ logged
     });
   }, [loggedIn]);
 
-  // Listen for background polling updates
+  // Listen for background polling updates (full array — used on initial load / force-refresh)
   useEffect(() => {
     const cleanup = window.api.onListingsUpdated((data) => {
       setListings(data.items);
       setPagination(data.pagination);
+    });
+    return cleanup;
+  }, []);
+
+  // Listen for delta-based polling updates (incremental — used during normal polling)
+  useEffect(() => {
+    const cleanup = window.api.onListingsDelta((delta: ListingDelta) => {
+      setListings((prev) => {
+        const removedSet = delta.removedIds.length > 0 ? new Set(delta.removedIds) : null;
+        let next = removedSet ? prev.filter((l) => !removedSet.has(l.id)) : prev;
+        if (delta.upserted.length > 0) {
+          next = [...next];
+          for (const listing of delta.upserted) {
+            const idx = next.findIndex((l) => l.id === listing.id);
+            if (idx >= 0) next[idx] = listing;
+            else next.unshift(listing);
+          }
+        }
+        return next;
+      });
     });
     return cleanup;
   }, []);

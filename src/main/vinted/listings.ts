@@ -93,9 +93,11 @@ async function uploadPhoto(photoPath: string, domain: string): Promise<number> {
   const client = getClient(domain);
   if (!client.isLoggedIn) throw new Error("Not logged in");
 
-  // Resolve local file:// URLs to absolute paths
+  // Resolve local-file:// or file:// URLs to absolute paths
   let filePath = photoPath;
-  if (filePath.startsWith("file://")) {
+  if (filePath.startsWith("local-file://")) {
+    filePath = decodeURIComponent(filePath.replace(/^local-file:\/\/\/?/, ""));
+  } else if (filePath.startsWith("file://")) {
     filePath = decodeURIComponent(filePath.replace("file:///", "").replace("file://", ""));
   }
 
@@ -347,4 +349,74 @@ export async function deleteListing(listingId: number, isDraft: boolean, domain?
     const response = await client.post(apiUrl);
     return { success: response.status === 200 };
   }
+}
+
+// ─── Edit Listing Price ─────────────────────────────────────────────────────
+
+/**
+ * Update the price of an existing listing.
+ *
+ * Mirrors the publishListing completion flow: fetch the item_upload detail
+ * for the listing, replace the price, then POST the same completion payload.
+ * Vinted accepts this for both drafts and published listings; on a published
+ * listing it edits in place rather than re-creating it.
+ */
+export async function editListingPrice(listingId: number, newPrice: number, domain?: string): Promise<unknown> {
+  const client = getClient(domain || DEFAULT_DOMAIN);
+  if (!client.isLoggedIn) throw new Error("Not logged in");
+
+  const detail = await getItemUploadDetail(listingId, domain);
+
+  const colorIds: number[] = [];
+  if (detail.color1_id) colorIds.push(detail.color1_id as number);
+  if (detail.color2_id) colorIds.push(detail.color2_id as number);
+
+  const rawPhotos = (detail.photos as Array<{ id: number; high_resolution?: { orientation: number } }>) || [];
+  const assignedPhotos = rawPhotos.map((p) => ({
+    id: p.id,
+    orientation: p.high_resolution?.orientation ?? 0,
+  }));
+
+  const conditionStatusId = (detail.status_id as number) || 6;
+
+  const payload = {
+    draft: {
+      id: listingId,
+      title: detail.title,
+      currency: detail.currency,
+      description: detail.description,
+      brand_id: detail.brand_id || null,
+      size_id: detail.size_id || null,
+      catalog_id: detail.catalog_id,
+      isbn: detail.isbn || null,
+      is_unisex: detail.is_unisex ?? 0,
+      status_id: conditionStatusId,
+      video_game_rating_id: detail.video_game_rating_id || null,
+      price: newPrice,
+      package_size_id: detail.package_size_id,
+      shipment_prices: detail.shipment_prices || { domestic: null, international: null },
+      color_ids: colorIds,
+      assigned_photos: assignedPhotos,
+      measurement_length: detail.measurement_length || null,
+      measurement_width: detail.measurement_width || null,
+      item_attributes: detail.item_attributes || [],
+      manufacturer: detail.manufacturer || null,
+      manufacturer_labelling: detail.manufacturer_labelling || null,
+      model: detail.model || null,
+    },
+    feedback_id: null,
+    parcel: detail.parcel || null,
+    push_up: false,
+    upload_session_id: randomUUID(),
+  };
+
+  const referrer = client.userId ? `https://${client.domain}/member/${client.userId}` : undefined;
+  const apiUrl = `https://${client.domain}${VINTED_API}/item_upload/drafts/${listingId}/completion`;
+  console.log(`[vinted] Editing listing ${listingId} price → ${newPrice}`);
+  const response = await client.post(apiUrl, payload, { "X-Money-Object": "true" }, referrer);
+
+  if (response.status !== 200 && response.status !== 201) {
+    throw new Error(`Failed to edit listing ${listingId} (status ${response.status}): ${JSON.stringify(response.data)}`);
+  }
+  return response.data;
 }

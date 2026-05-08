@@ -4,9 +4,13 @@ import { isTransientError } from "../../shared/retry";
 // ─── Cloudflare Detection ──────────────────────────────────────────────────
 
 const CF_MARKERS = ["challenges.cloudflare.com", "Just a moment", "cf-turnstile", "cdn-cgi/challenge-platform"];
+const CHROMIUM_NETWORK_ERROR_RE = /\b(?:net::)?ERR_[A-Z_]+\b/;
 
 function isCloudflareChallenge(body: string): boolean {
-  return CF_MARKERS.some((marker) => body.includes(marker));
+  // CF challenge markup appears in the document head; scanning the full body
+  // is wasteful for large API responses. Only check the first 4KB.
+  const head = body.length > 4096 ? body.slice(0, 4096) : body;
+  return CF_MARKERS.some((marker) => head.includes(marker));
 }
 
 function isCloudflareUrl(url: string): boolean {
@@ -15,25 +19,21 @@ function isCloudflareUrl(url: string): boolean {
 
 // ─── Rate Limiting ─────────────────────────────────────────────────────────
 // Ensures a randomized 0.5-1.5 second gap between ANY Vinted API call.
+// Uses a "next available time" mutex so the queued promises don't grow.
 
-let _lastCallTime = 0;
-let _rateLimitChain: Promise<void> = Promise.resolve();
+let _nextAvailableAt = 0;
 
-function withRateLimit(): Promise<void> {
-  _rateLimitChain = _rateLimitChain.then(async () => {
-    const now = Date.now();
-    const elapsed = now - _lastCallTime;
-    const minGap = 500 + Math.random() * 1000; // 0.5-1.5 seconds
+async function withRateLimit(): Promise<void> {
+  const now = Date.now();
+  const start = Math.max(now, _nextAvailableAt);
+  const gap = 500 + Math.random() * 1000; // 0.5-1.5 seconds
+  _nextAvailableAt = start + gap;
 
-    if (_lastCallTime > 0 && elapsed < minGap) {
-      const wait = minGap - elapsed;
-      console.log(`[vinted] Rate limiting: waiting ${Math.round(wait)}ms before next API call`);
-      await new Promise<void>((r) => setTimeout(r, wait));
-    }
-
-    _lastCallTime = Date.now();
-  });
-  return _rateLimitChain;
+  const wait = start - now;
+  if (wait > 0) {
+    console.log(`[vinted] Rate limiting: waiting ${Math.round(wait)}ms before next API call`);
+    await new Promise<void>((r) => setTimeout(r, wait));
+  }
 }
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -307,25 +307,41 @@ export class VintedClient {
     try {
       const win = await this._ensureWindow();
       const result = await win.webContents.executeJavaScript(`
-        fetch("/api/v2/users/current", {
-          signal: AbortSignal.timeout(10000),
-          credentials: "same-origin",
-          headers: { "Accept": "application/json" }
-        }).then(r => r.json()).catch(() => null)
+        (async () => {
+          try {
+            const response = await fetch("/api/v2/users/current", {
+              signal: AbortSignal.timeout(10000),
+              credentials: "same-origin",
+              headers: { "Accept": "application/json" }
+            });
+            return { ok: true, data: await response.json() };
+          } catch (err) {
+            return {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err)
+            };
+          }
+        })()
       `);
 
-      if (result?.user?.id) {
+      if (!result?.ok) {
+        throw new Error(result?.error || "Session check failed");
+      }
+
+      if (result.data?.user?.id) {
         this._loggedIn = true;
-        this._userId = result.user.id;
+        this._userId = result.data.user.id;
         return { loggedIn: true, userId: this._userId };
       }
       this._loggedIn = false;
       this._userId = null;
       return { loggedIn: false, userId: null };
-    } catch {
-      this._loggedIn = false;
-      this._userId = null;
-      return { loggedIn: false, userId: null };
+    } catch (err) {
+      if (this._isNetworkError(err as Error)) {
+        console.log("[vinted] Session check hit a transient network error — recreating window");
+        this.resetWindow();
+      }
+      throw err;
     }
   }
 
@@ -339,65 +355,24 @@ export class VintedClient {
   // ─── HTTP Methods ───────────────────────────────────────────────────────────
 
   async get<T = unknown>(url: string, params: Record<string, unknown> = {}): Promise<ApiResponse<T>> {
-    await withRateLimit();
-    let tried = 0;
-    while (tried < this._maxRetries) {
-      tried++;
-      const isLast = tried >= this._maxRetries;
-
-      try {
-        const win = await this._ensureWindow();
-        const fullUrl = this._buildUrl(url, params);
-
-        const result: FetchResult = await win.webContents.executeJavaScript(`
-          fetch(${JSON.stringify(fullUrl)}, {
-            signal: AbortSignal.timeout(15000),
-            headers: {
-              "Accept": "application/json, text/plain, */*",
-              "Accept-Language": "en-GB,en;q=0.5",
-              "X-Requested-With": "XMLHttpRequest"
-            },
-            credentials: "same-origin"
-          }).then(async (r) => {
-            const ct = r.headers.get("content-type") || "";
-            const body = await r.text();
-            return { status: r.status, contentType: ct, body: body };
-          })
-        `);
-
-        if (result.contentType.includes("text/html")) {
-          if (isCloudflareChallenge(result.body)) {
-            console.log(`[vinted] Cloudflare challenge on attempt ${tried}/${this._maxRetries} (status ${result.status})`);
-            if (isLast) throw new Error("Cloudflare challenge could not be solved after all retry attempts");
-            await this._solveChallenge();
-            continue;
-          }
-          throw new Error(`Vinted returned HTML (status ${result.status}) — not a Cloudflare challenge`);
-        }
-
-        if (result.status === 401) {
-          console.log(`[vinted] 401 Unauthorised on attempt ${tried}/${this._maxRetries} — refreshing session...`);
-          if (isLast) throw new Error("Vinted API returned 401 and session could not be refreshed");
-          await this._navigateAndWaitForChallenge(this._baseUrl);
-          continue;
-        }
-
-        const data = JSON.parse(result.body) as T;
-        return { status: result.status, data };
-      } catch (err) {
-        // Network errors (e.g. after sleep) require a fresh window
-        if (this._isNetworkError(err as Error)) {
-          console.log(`[vinted] Network error on attempt ${tried}/${this._maxRetries} — recreating window`);
-          this.resetWindow();
-        }
-        if (isLast || !isTransientError(err as Error)) throw err;
-
-        const delay = this._retryBaseDelay * Math.pow(2, tried - 1);
-        console.warn(`[vinted] Error on attempt ${tried}/${this._maxRetries}, retrying in ${delay}ms: ${(err as Error).message}`);
-        await new Promise<void>((r) => setTimeout(r, delay));
-      }
-    }
-    throw new Error(`VintedClient.get: exhausted ${this._maxRetries} retries without a result`);
+    const fullUrl = this._buildUrl(url, params);
+    return this._execute<T>("GET", () =>
+      Promise.resolve(`
+        fetch(${JSON.stringify(fullUrl)}, {
+          signal: AbortSignal.timeout(15000),
+          headers: {
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-GB,en;q=0.5",
+            "X-Requested-With": "XMLHttpRequest"
+          },
+          credentials: "same-origin"
+        }).then(async (r) => {
+          const ct = r.headers.get("content-type") || "";
+          const body = await r.text();
+          return { status: r.status, contentType: ct, body: body };
+        })
+      `),
+    );
   }
 
   async post<T = unknown>(
@@ -436,87 +411,46 @@ export class VintedClient {
     mimeType: string,
     extraFields?: Record<string, string>,
   ): Promise<ApiResponse<T>> {
-    await withRateLimit();
-    let tried = 0;
-    while (tried < this._maxRetries) {
-      tried++;
-      const isLast = tried >= this._maxRetries;
+    return this._execute<T>("POST", async (win) => {
+      const csrfToken = await this._getCsrfToken(win);
+      const anonId = await this._getAnonId(win);
 
-      try {
-        const win = await this._ensureWindow();
-        const csrfToken = await this._getCsrfToken(win);
-        const anonId = await this._getAnonId(win);
+      const csrfPart = csrfToken ? `headers.set("X-CSRF-Token", ${JSON.stringify(csrfToken)});` : "";
+      const anonIdPart = anonId ? `headers.set("X-Anon-Id", ${JSON.stringify(anonId)});` : "";
 
-        const csrfPart = csrfToken ? `headers.set("X-CSRF-Token", ${JSON.stringify(csrfToken)});` : "";
-        const anonIdPart = anonId ? `headers.set("X-Anon-Id", ${JSON.stringify(anonId)});` : "";
-
-        const fetchCode = `
-          (async () => {
-            const b64 = ${JSON.stringify(fileBase64)};
-            const binary = atob(b64);
-            const bytes = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-            const blob = new Blob([bytes], { type: ${JSON.stringify(mimeType)} });
-            const formData = new FormData();
-            ${
-              extraFields
-                ? Object.entries(extraFields)
-                    .map(([k, v]) => `formData.append(${JSON.stringify(k)}, ${JSON.stringify(v)});`)
-                    .join("\n            ")
-                : ""
-            }
-            formData.append(${JSON.stringify(fieldName)}, blob, ${JSON.stringify(fileName)});
-            const headers = new Headers();
-            headers.set("Accept", "application/json, text/plain, */*, image/webp");
-            ${csrfPart}
-            ${anonIdPart}
-            const r = await fetch(${JSON.stringify(url)}, {
-              method: "POST",
-              signal: AbortSignal.timeout(60000),
-              headers,
-              credentials: "same-origin",
-              body: formData
-            });
-            const ct = r.headers.get("content-type") || "";
-            const body = await r.text();
-            return { status: r.status, contentType: ct, body };
-          })()
-        `;
-
-        const result: FetchResult = await win.webContents.executeJavaScript(fetchCode);
-
-        if (result.contentType.includes("text/html")) {
-          if (isCloudflareChallenge(result.body)) {
-            if (isLast) throw new Error("Cloudflare challenge could not be solved after all retry attempts");
-            await this._solveChallenge();
-            continue;
+      return `
+        (async () => {
+          const b64 = ${JSON.stringify(fileBase64)};
+          const binary = atob(b64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          const blob = new Blob([bytes], { type: ${JSON.stringify(mimeType)} });
+          const formData = new FormData();
+          ${
+            extraFields
+              ? Object.entries(extraFields)
+                  .map(([k, v]) => `formData.append(${JSON.stringify(k)}, ${JSON.stringify(v)});`)
+                  .join("\n            ")
+              : ""
           }
-          throw new Error(`Vinted returned HTML on file upload (status ${result.status})`);
-        }
-
-        if (result.status === 401) {
-          if (isLast) throw new Error("Vinted API returned 401");
-          await this._navigateAndWaitForChallenge(this._baseUrl);
-          continue;
-        }
-
-        const data = result.body ? (JSON.parse(result.body) as T) : (null as T);
-        return { status: result.status, data };
-      } catch (err) {
-        if (this._isNetworkError(err as Error)) {
-          console.log(`[vinted] Network error on file upload attempt ${tried}/${this._maxRetries} — recreating window`);
-          this.resetWindow();
-        }
-        if (isLast || !isTransientError(err as Error)) throw err;
-
-        const delay = this._retryBaseDelay * Math.pow(2, tried - 1);
-        console.warn(
-          `[vinted] Error on file upload attempt ${tried}/${this._maxRetries}, retrying in ${delay}ms: ${(err as Error).message}`,
-        );
-        await new Promise<void>((r) => setTimeout(r, delay));
-      }
-    }
-    throw new Error(`VintedClient.postFile: exhausted ${this._maxRetries} retries`);
+          formData.append(${JSON.stringify(fieldName)}, blob, ${JSON.stringify(fileName)});
+          const headers = new Headers();
+          headers.set("Accept", "application/json, text/plain, */*, image/webp");
+          ${csrfPart}
+          ${anonIdPart}
+          const r = await fetch(${JSON.stringify(url)}, {
+            method: "POST",
+            signal: AbortSignal.timeout(60000),
+            headers,
+            credentials: "same-origin",
+            body: formData
+          });
+          const ct = r.headers.get("content-type") || "";
+          const body = await r.text();
+          return { status: r.status, contentType: ct, body };
+        })()
+      `;
+    });
   }
 
   private async _mutatingRequest<T = unknown>(
@@ -526,14 +460,9 @@ export class VintedClient {
     extraHeaders?: Record<string, string>,
     referrer?: string,
   ): Promise<ApiResponse<T>> {
-    await withRateLimit();
-    let tried = 0;
-    while (tried < this._maxRetries) {
-      tried++;
-      const isLast = tried >= this._maxRetries;
-
-      try {
-        const win = await this._ensureWindow();
+    return this._execute<T>(
+      method,
+      async (win) => {
         const csrfToken = await this._getCsrfToken(win);
         const anonId = await this._getAnonId(win);
 
@@ -542,25 +471,17 @@ export class VintedClient {
           "Content-Type": "application/json",
           "Accept-Language": "en-GB,en;q=0.7",
         };
-        if (csrfToken) {
-          headers["X-CSRF-Token"] = csrfToken;
-        }
-        if (anonId) {
-          headers["X-Anon-Id"] = anonId;
-        }
-        if (extraHeaders) {
-          Object.assign(headers, extraHeaders);
-        }
+        if (csrfToken) headers["X-CSRF-Token"] = csrfToken;
+        if (anonId) headers["X-Anon-Id"] = anonId;
+        if (extraHeaders) Object.assign(headers, extraHeaders);
 
         const headerEntries = Object.entries(headers)
           .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)
           .join(", ");
-
         const bodyPart = body !== null ? `, body: ${JSON.stringify(JSON.stringify(body))}` : "";
-
         const referrerPart = referrer ? `, referrer: ${JSON.stringify(referrer)}` : "";
 
-        const fetchCode = `
+        return `
           fetch(${JSON.stringify(url)}, {
             method: ${JSON.stringify(method)},
             signal: AbortSignal.timeout(30000),
@@ -572,11 +493,44 @@ export class VintedClient {
             return { status: r.status, contentType: ct, body: responseBody };
           })
         `;
+      },
+      { handle403: true },
+    );
+  }
 
-        const result: FetchResult = await win.webContents.executeJavaScript(fetchCode);
+  /**
+   * Run a fetch-via-`executeJavaScript` operation with shared retry/Cloudflare/401/403/network handling.
+   * Callers provide a `buildJsCode` that returns the JS source to execute inside the hidden window.
+   */
+  private async _execute<T = unknown>(
+    method: string,
+    buildJsCode: (win: BrowserWindow) => Promise<string> | string,
+    options: { handle403?: boolean } = {},
+  ): Promise<ApiResponse<T>> {
+    await withRateLimit();
+    let tried = 0;
+    while (tried < this._maxRetries) {
+      tried++;
+      const isLast = tried >= this._maxRetries;
+
+      try {
+        const win = await this._ensureWindow();
+        const jsCode = await buildJsCode(win);
+        // Outer hard timeout: the inner fetch already uses AbortSignal.timeout, but if the
+        // hidden window is destroyed (e.g. by a resume-recovery resetWindow) while a fetch
+        // is mid-flight, executeJavaScript can hang indefinitely. The outer timeout
+        // guarantees no individual attempt blocks polling/IPC forever (e.g. after sleep).
+        const EXECUTE_TIMEOUT_MS = 90_000;
+        const result: FetchResult = await Promise.race([
+          win.webContents.executeJavaScript(jsCode) as Promise<FetchResult>,
+          new Promise<FetchResult>((_, reject) =>
+            setTimeout(() => reject(new Error(`executeJavaScript timed out after ${EXECUTE_TIMEOUT_MS / 1000}s`)), EXECUTE_TIMEOUT_MS),
+          ),
+        ]);
 
         if (result.contentType.includes("text/html")) {
           if (isCloudflareChallenge(result.body)) {
+            console.log(`[vinted] Cloudflare challenge on ${method} attempt ${tried}/${this._maxRetries} (status ${result.status})`);
             if (isLast) throw new Error("Cloudflare challenge could not be solved after all retry attempts");
             await this._solveChallenge();
             continue;
@@ -585,18 +539,19 @@ export class VintedClient {
         }
 
         if (result.status === 401) {
-          if (isLast) throw new Error("Vinted API returned 401");
+          console.log(`[vinted] 401 Unauthorised on ${method} attempt ${tried}/${this._maxRetries} — refreshing session...`);
+          if (isLast) throw new Error("Vinted API returned 401 and session could not be refreshed");
           await this._navigateAndWaitForChallenge(this._baseUrl);
           continue;
         }
 
-        // CSRF token was missing or stale — refresh page context and retry
-        if (result.status === 403) {
+        // 403 typically indicates a stale CSRF token — refresh and retry (mutating requests only)
+        if (options.handle403 && result.status === 403) {
           if (isLast) {
             const data = result.body ? (JSON.parse(result.body) as T) : (null as T);
             return { status: result.status, data };
           }
-          console.log(`[vinted] 403 Forbidden on attempt ${tried}/${this._maxRetries} — refreshing page for fresh CSRF...`);
+          console.log(`[vinted] 403 Forbidden on ${method} attempt ${tried}/${this._maxRetries} — refreshing page for fresh CSRF...`);
           await this._navigateAndWaitForChallenge(this._baseUrl);
           await this._extractAndCacheCsrfToken();
           continue;
@@ -637,7 +592,17 @@ export class VintedClient {
           (function() {
             var html = document.documentElement.outerHTML;
             var m = html.match(/"CSRF_TOKEN\\\\":\\\\"([^"]+)\\\\"/);
-            return m ? m[1] : null;
+            if (m) return m[1];
+            // Fallback 1: <meta name="csrf-token" content="...">
+            var meta = document.querySelector('meta[name="csrf-token"]');
+            if (meta) {
+              var c = meta.getAttribute('content');
+              if (c) return c;
+            }
+            // Fallback 2: _csrf_token cookie
+            var cm = document.cookie.match(/(?:^|;\\s*)_csrf_token=([^;]+)/);
+            if (cm) return decodeURIComponent(cm[1]);
+            return null;
           })()
         `);
 
@@ -714,7 +679,12 @@ export class VintedClient {
   /** Check if an error indicates a broken network context (e.g. after sleep). */
   private _isNetworkError(err: Error): boolean {
     const msg = err.message || "";
-    return msg.includes("Failed to fetch") || msg.includes("net::ERR_");
+    return (
+      msg.includes("Failed to fetch") ||
+      msg.includes("executeJavaScript timed out") ||
+      msg.includes("Render frame was disposed") ||
+      CHROMIUM_NETWORK_ERROR_RE.test(msg)
+    );
   }
 }
 

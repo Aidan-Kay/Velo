@@ -1,10 +1,12 @@
+import { SparklesIcon } from "@heroicons/react/20/solid";
+import { Button } from "@shared/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@shared/components/ui/dialog";
+import { Input } from "@shared/components/ui/input";
+import { Label } from "@shared/components/ui/label";
+import { Switch } from "@shared/components/ui/switch";
+import { Textarea } from "@shared/components/ui/textarea";
 import React, { useEffect, useState } from "react";
 import type { LocalItem } from "../../../shared/types";
-import { Button } from "./ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "./ui/dialog";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Textarea } from "./ui/textarea";
 
 interface EditItemModalProps {
   open: boolean;
@@ -17,6 +19,7 @@ interface EditItemModalProps {
 
 const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, onSave, saving, addToast }) => {
   const [item, setItem] = useState<Partial<LocalItem>>({});
+  const [aiBusy, setAiBusy] = useState(false);
 
   // Sync edit item on open
   useEffect(() => {
@@ -41,6 +44,35 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
     onSave(item);
   };
 
+  const canUseAi = !!item.id && !!item.photos && item.photos.length > 0;
+
+  const handleGenerateAi = async () => {
+    if (!item.id) {
+      addToast("Save the item once before generating with AI", "info");
+      return;
+    }
+    if (!item.photos || item.photos.length === 0) {
+      addToast("Add at least one photo first", "error");
+      return;
+    }
+
+    if ((item.title && item.title.trim()) || (item.description && item.description.trim())) {
+      const ok = window.confirm("Replace existing title and description with AI output?");
+      if (!ok) return;
+    }
+
+    setAiBusy(true);
+    try {
+      const draft = await window.api.aiGenerateListingDraft(item.id);
+      setItem((prev) => ({ ...prev, title: draft.title, description: draft.description }));
+      addToast("AI draft generated", "success");
+    } catch (err) {
+      addToast(`AI generation failed: ${(err as Error).message}`, "error");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
   return (
     <Dialog
       open={open}
@@ -54,13 +86,28 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
         </DialogHeader>
         <div className="space-y-5">
           {/* Title */}
-          <div className="space-y-1.5">
-            <Label>Title *</Label>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <Label>
+                Title <span className="text-destructive">*</span>
+              </Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleGenerateAi}
+                disabled={!canUseAi || aiBusy}
+                title={canUseAi ? "Generate title and description from photos" : "Save the item with photos first"}
+              >
+                <SparklesIcon className="w-4 h-4 mr-1" />
+                {aiBusy ? "Generating…" : "Generate with AI"}
+              </Button>
+            </div>
             <Input value={item.title ?? ""} onChange={(e) => updateField("title", e.target.value)} placeholder="Item title" />
           </div>
 
           {/* Description */}
-          <div className="space-y-1.5">
+          <div className="space-y-3">
             <Label>Description</Label>
             <Textarea
               className="h-36 resize-none"
@@ -72,8 +119,10 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
 
           {/* Price & Stock */}
           <div className="flex gap-4">
-            <div className="flex-1 space-y-1.5">
-              <Label>Price *</Label>
+            <div className="flex-1 space-y-3">
+              <Label>
+                Price <span className="text-destructive">*</span>
+              </Label>
               <Input
                 type="number"
                 step="0.01"
@@ -82,7 +131,7 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
                 onChange={(e) => updateField("price", Math.max(0, parseFloat(e.target.value) || 0))}
               />
             </div>
-            <div className="w-28 space-y-1.5">
+            <div className="w-28 space-y-3">
               <Label>Stock</Label>
               <Input
                 type="number"
@@ -92,12 +141,59 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
               />
             </div>
           </div>
+
+          {/* Auto-Accept Offers */}
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Auto-accept offers</Label>
+                <p className="text-xs text-muted-foreground">Override the global threshold for this item</p>
+              </div>
+              <Switch
+                checked={item.autoAcceptOfferPercent !== null && item.autoAcceptOfferPercent !== undefined}
+                onCheckedChange={(checked) => updateField("autoAcceptOfferPercent", checked ? 90 : null)}
+              />
+            </div>
+            {item.autoAcceptOfferPercent != null && (
+              <Input
+                type="number"
+                min="1"
+                max="100"
+                className="w-32"
+                value={item.autoAcceptOfferPercent}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  if (!Number.isNaN(val) && val >= 1 && val <= 100) {
+                    updateField("autoAcceptOfferPercent", val);
+                  }
+                }}
+              />
+            )}
+          </div>
+
+          {/* Tags */}
+          <div className="space-y-3">
+            <Label>Tags</Label>
+            <Input
+              value={(item.tags ?? []).join(", ")}
+              onChange={(e) =>
+                updateField(
+                  "tags",
+                  e.target.value
+                    .split(",")
+                    .map((t) => t.trim())
+                    .filter((t) => t.length > 0),
+                )
+              }
+              placeholder="Comma-separated tags"
+            />
+          </div>
         </div>
         <DialogFooter>
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          <Button variant="secondary" onClick={onClose}>
             Cancel
           </Button>
-          <Button size="sm" onClick={handleSubmit} disabled={saving}>
+          <Button onClick={handleSubmit} disabled={saving}>
             {saving ? "Saving…" : "Update"}
           </Button>
         </DialogFooter>

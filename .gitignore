@@ -10,5 +10,6 @@ Thumbs.db
 api-example-responses/
 
 .md/
+AGENTS.md
 CLAUDE.md
 .github/

@@ -1,4 +1,3 @@
-import { Card } from "@/components/ui/card";
 import {
   ArrowUpTrayIcon,
   ChevronDownIcon,
@@ -7,34 +6,146 @@ import {
   PencilSquareIcon,
   TrashIcon,
 } from "@heroicons/react/20/solid";
+import { Button } from "@shared/components/ui/button";
+import { Card } from "@shared/components/ui/card";
+import { Checkbox } from "@shared/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@shared/components/ui/dropdown-menu";
+import { Input } from "@shared/components/ui/input";
+import { Switch } from "@shared/components/ui/switch";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@shared/components/ui/table";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LocalItem } from "../../../shared/types";
 import { Badge } from "../components/Badge";
+import { BulkEditItemsModal, type BulkEditUpdates } from "../components/BulkEditItemsModal";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
 import EditItemModal from "../components/EditItemModal";
 import type { FilterOption } from "../components/FilterBar";
 import FilterBar from "../components/FilterBar";
 import { ProgressModal, type ProgressState } from "../components/ProgressModal";
 import { SortArrow } from "../components/SortArrow";
-import { Button } from "../components/ui/button";
-import { Checkbox } from "../components/ui/checkbox";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
-import { Input } from "../components/ui/input";
-import { Switch } from "../components/ui/switch";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../components/ui/table";
+import { useItemsSync } from "../context/ItemsSyncContext";
 import { useListingSync } from "../context/ListingSyncContext";
+import { useToast } from "../context/ToastContext";
 import { runBulkOperation } from "../hooks/useBulkOperation";
+import { useGlobalRefresh } from "../hooks/useGlobalRefresh";
 import { useTableSort } from "../hooks/useTableSort";
 
 interface ItemsProps {
   loggedIn: boolean;
-  addToast: (message: string, type?: "success" | "error" | "info") => void;
 }
 
 type SortColumn = "title" | "description" | "price" | "stock" | "status";
 
+/** Derive listing status for a local item from the shared listing map. */
+function getListingStatus(item: LocalItem, listingMap: Map<string, { status: string; id: number }>): "active" | "draft" | "not_listed" {
+  const titleKey = item.title.toLowerCase().trim();
+  const entry = listingMap.get(titleKey);
+  if (entry) {
+    if (entry.status === "Draft") return "draft";
+    if (entry.status === "Sold" || entry.status === "Reserved") return "not_listed";
+    return "active";
+  }
+  return "not_listed";
+}
+
 // Isolated input so local value state is separate from the persisted item.stock,
 // allowing the onBlur comparison to correctly detect user-made changes.
+
+const STOCK_OPTIONS = [
+  { value: "in_stock", label: "In stock" },
+  { value: "out_of_stock", label: "Out of stock" },
+];
+
+const StockFilterDropdown: React.FC<{
+  stockFilter: string[];
+  onStockFilterChange: (value: string[]) => void;
+}> = ({ stockFilter, onStockFilterChange }) => {
+  const allSelected = stockFilter.length === 0 || stockFilter.length === STOCK_OPTIONS.length;
+
+  const toggle = (v: string) => {
+    if (stockFilter.includes(v)) {
+      const next = stockFilter.filter((x) => x !== v);
+      onStockFilterChange(next);
+    } else {
+      const next = [...stockFilter, v];
+      onStockFilterChange(next.length === STOCK_OPTIONS.length ? [] : next);
+    }
+  };
+
+  const label = allSelected
+    ? "All stock"
+    : stockFilter.length === 1
+      ? (STOCK_OPTIONS.find((o) => o.value === stockFilter[0])?.label ?? stockFilter[0])
+      : `${stockFilter.length} selected`;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger render={<Button variant="outline" className="w-36 justify-between" />}>
+        <span className="truncate">{label}</span>
+        <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-36">
+        <DropdownMenuCheckboxItem checked={allSelected} onCheckedChange={() => onStockFilterChange([])}>
+          All stock
+        </DropdownMenuCheckboxItem>
+        {STOCK_OPTIONS.map((opt) => (
+          <DropdownMenuCheckboxItem
+            key={opt.value}
+            checked={allSelected || stockFilter.includes(opt.value)}
+            onCheckedChange={() => toggle(opt.value)}
+          >
+            {opt.label}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
+const TagFilterDropdown: React.FC<{
+  allTags: string[];
+  tagFilter: string[];
+  onTagFilterChange: (value: string[]) => void;
+}> = ({ allTags, tagFilter, onTagFilterChange }) => {
+  const allSelected = tagFilter.length === 0;
+
+  const toggle = (tag: string) => {
+    if (tagFilter.includes(tag)) {
+      onTagFilterChange(tagFilter.filter((t) => t !== tag));
+    } else {
+      onTagFilterChange([...tagFilter, tag]);
+    }
+  };
+
+  const label = allSelected ? "All tags" : tagFilter.length === 1 ? tagFilter[0] : `${tagFilter.length} tags`;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger render={<Button variant="outline" className="w-36 justify-between" disabled={allTags.length === 0} />}>
+        <span className="truncate">{label}</span>
+        <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-44 max-h-72 overflow-auto">
+        <DropdownMenuCheckboxItem checked={allSelected} onCheckedChange={() => onTagFilterChange([])}>
+          All tags
+        </DropdownMenuCheckboxItem>
+        {allTags.map((tag) => (
+          <DropdownMenuCheckboxItem key={tag} checked={tagFilter.includes(tag)} onCheckedChange={() => toggle(tag)}>
+            {tag}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
 const StockInput: React.FC<{ item: LocalItem; onSave: (newStock: number) => void }> = ({ item, onSave }) => {
   const [value, setValue] = useState(item.stock);
   useEffect(() => {
@@ -47,6 +158,7 @@ const StockInput: React.FC<{ item: LocalItem; onSave: (newStock: number) => void
       className="w-16 text-center text-xs py-1"
       value={value}
       onChange={(e) => setValue(parseInt(e.target.value, 10) || 0)}
+      onWheel={(e) => e.currentTarget.blur()}
       onBlur={() => {
         if (value !== item.stock) onSave(value);
       }}
@@ -54,10 +166,150 @@ const StockInput: React.FC<{ item: LocalItem; onSave: (newStock: number) => void
   );
 };
 
-const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
+// ─── Memoized Item Row ───────────────────────────────────────────────────────
+
+interface ItemRowProps {
+  item: LocalItem;
+  itemStatus: "active" | "draft" | "not_listed";
+  isSelected: boolean;
+  isListing: boolean;
+  isPublishing: boolean;
+  loggedIn: boolean;
+  onToggleSelect: (id: string) => void;
+  onEdit: (item: LocalItem) => void;
+  onDelete: (item: LocalItem) => void;
+  onListItem: (item: LocalItem, asDraft?: boolean) => void;
+  onPublishDraft: (item: LocalItem) => void;
+  onQuickStockUpdate: (item: LocalItem, newStock: number) => void;
+  onToggleRelisting: (item: LocalItem, enabled: boolean) => void;
+}
+
+const ItemRow = React.memo<ItemRowProps>(
+  ({
+    item,
+    itemStatus,
+    isSelected,
+    isListing,
+    isPublishing,
+    loggedIn,
+    onToggleSelect,
+    onEdit,
+    onDelete,
+    onListItem,
+    onPublishDraft,
+    onQuickStockUpdate,
+    onToggleRelisting,
+  }) => {
+    const listed = itemStatus !== "not_listed";
+    return (
+      <TableRow>
+        {/* Checkbox */}
+        <TableCell>
+          <Checkbox checked={isSelected} onCheckedChange={() => onToggleSelect(item.id)} />
+        </TableCell>
+
+        {/* Item (thumbnail + title) */}
+        <TableCell className="max-w-0">
+          <div className="flex items-center gap-3">
+            {item.photos.length > 0 && (
+              <div className="w-10 h-10 rounded bg-muted overflow-hidden flex-shrink-0">
+                <img src={item.photos[0]} alt="" className="w-full h-full object-cover" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium">{item.title}</div>
+              {(item.tags ?? []).length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {(item.tags ?? []).map((tag) => (
+                    <span
+                      key={tag}
+                      className="inline-block rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] font-medium text-secondary-foreground"
+                    >
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </TableCell>
+
+        {/* Description */}
+        <TableCell className="text-muted-foreground text-xs">
+          <span className="truncate block max-w-[300px]">{item.description || "—"}</span>
+        </TableCell>
+
+        {/* Price */}
+        <TableCell className="font-medium whitespace-nowrap">
+          {item.price} {item.currency}
+        </TableCell>
+
+        {/* Relist toggle */}
+        <TableCell>
+          <Switch checked={item.relistingEnabled !== false} onCheckedChange={(checked) => onToggleRelisting(item, checked)} />
+        </TableCell>
+
+        {/* Stock (inline editable) */}
+        <TableCell>
+          <StockInput item={item} onSave={(newStock) => onQuickStockUpdate(item, newStock)} />
+        </TableCell>
+
+        {/* Status */}
+        <TableCell>
+          {itemStatus === "active" && <Badge variant="active">Active</Badge>}
+          {itemStatus === "draft" && <Badge variant="waiting">Draft</Badge>}
+          {itemStatus === "not_listed" && <Badge variant="hidden">Not active</Badge>}
+        </TableCell>
+
+        {/* Actions */}
+        <TableCell>
+          <div className="flex items-center justify-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger>
+                <Button variant="outline" size="icon" className="h-8 w-8">
+                  <EllipsisVerticalIcon className="w-5 h-5" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent className="w-auto min-w-max" align="end">
+                {!listed && loggedIn && item.stock > 0 && (
+                  <>
+                    <DropdownMenuItem onClick={() => onListItem(item)} disabled={isListing}>
+                      <ArrowUpTrayIcon className="w-4 h-4" />
+                      {isListing ? "Listing…" : "List on Vinted"}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => onListItem(item, true)} disabled={isListing}>
+                      <ArrowUpTrayIcon className="w-4 h-4" />
+                      List as draft
+                    </DropdownMenuItem>
+                  </>
+                )}
+                {itemStatus === "draft" && loggedIn && item.stock > 0 && (
+                  <DropdownMenuItem onClick={() => onPublishDraft(item)} disabled={isPublishing}>
+                    <ArrowUpTrayIcon className="w-4 h-4" />
+                    {isPublishing ? "Publishing…" : "Publish"}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onClick={() => onEdit(item)}>
+                  <PencilSquareIcon className="w-4 h-4" />
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onDelete(item)}>
+                  <TrashIcon className="w-4 h-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </TableCell>
+      </TableRow>
+    );
+  },
+);
+
+const Items: React.FC<ItemsProps> = ({ loggedIn }) => {
+  const { addToast } = useToast();
   const { listingMap, patchListingMap, refreshListings } = useListingSync();
-  const [items, setItems] = useState<LocalItem[]>([]);
-  const [loading, setLoading] = useState(false);
+  const { items, loading, upsertItem, removeItem, setItems } = useItemsSync();
   const [search, setSearch] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
   const [editItem, setEditItem] = useState<Partial<LocalItem>>({});
@@ -68,10 +320,17 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
   const [publishingItem, setPublishingItem] = useState<string | null>(null);
   const { sortColumn, sortDirection, handleSort } = useTableSort<SortColumn>("title");
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
-  const [hideOutOfStock, setHideOutOfStock] = useState(false);
+  const [stockFilter, setStockFilter] = useState<string[]>([]);
+  const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [confirmDeleteItem, setConfirmDeleteItem] = useState<LocalItem | null>(null);
   const [progress, setProgress] = useState<ProgressState | null>(null);
+  const [showBulkEdit, setShowBulkEdit] = useState(false);
   const cancelledRef = useRef(false);
+
+  const handleGlobalRefresh = useCallback(() => {
+    refreshListings().catch(() => {});
+  }, [refreshListings]);
+  useGlobalRefresh("items", handleGlobalRefresh);
 
   const statusOptions: FilterOption[] = [
     { value: "active", label: "Active" },
@@ -79,41 +338,32 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     { value: "not_listed", label: "Not active" },
   ];
 
-  const loadItems = useCallback(async () => {
-    setLoading(true);
-    try {
-      const result = await window.api.getItems();
-      setItems(result);
-    } catch {
-      addToast("Failed to load items", "error");
-    } finally {
-      setLoading(false);
-    }
-  }, [addToast]);
-
-  useEffect(() => {
-    loadItems();
-  }, [loadItems]);
-
-  const getListingStatus = (item: LocalItem): "active" | "draft" | "not_listed" => {
-    const titleKey = item.title.toLowerCase().trim();
-    const entry = listingMap.get(titleKey);
-    if (entry) {
-      if (entry.status === "Draft") return "draft";
-      if (entry.status === "Sold" || entry.status === "Reserved") return "not_listed";
-      return "active";
-    }
-    return "not_listed";
-  };
-
   // ─── Filter & Sort ─────────────────────────────────────────────────────
+  const allTags = useMemo(() => {
+    const set = new Set<string>();
+    for (const item of items) {
+      for (const tag of item.tags ?? []) set.add(tag);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [items]);
+
   const filtered = useMemo(() => {
     const result = items.filter((item) => {
-      if (hideOutOfStock && item.stock <= 0) return false;
-      if (statusFilter.length > 0 && !statusFilter.includes(getListingStatus(item))) return false;
+      // Stock filter
+      if (stockFilter.length > 0 && stockFilter.length < 2) {
+        const inStock = item.stock > 0;
+        if (stockFilter.includes("in_stock") && !inStock) return false;
+        if (stockFilter.includes("out_of_stock") && inStock) return false;
+      }
+      if (statusFilter.length > 0 && !statusFilter.includes(getListingStatus(item, listingMap))) return false;
+      if (tagFilter.length > 0) {
+        const itemTags = item.tags ?? [];
+        if (!tagFilter.every((t) => itemTags.includes(t))) return false;
+      }
       if (!search) return true;
       const q = search.toLowerCase();
-      return item.title.toLowerCase().includes(q) || item.description.toLowerCase().includes(q);
+      const tagMatch = (item.tags ?? []).some((t) => t.toLowerCase().includes(q));
+      return item.title.toLowerCase().includes(q) || item.description.toLowerCase().includes(q) || tagMatch;
     });
 
     const dir = sortDirection === "asc" ? 1 : -1;
@@ -129,8 +379,8 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
           return dir * (a.stock - b.stock);
         case "status": {
           const statusOrder: Record<string, number> = { active: 2, draft: 1, not_listed: 0 };
-          const aStatus = getListingStatus(a);
-          const bStatus = getListingStatus(b);
+          const aStatus = getListingStatus(a, listingMap);
+          const bStatus = getListingStatus(b, listingMap);
           return dir * ((statusOrder[aStatus] ?? 0) - (statusOrder[bStatus] ?? 0));
         }
         default:
@@ -139,7 +389,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     });
 
     return result;
-  }, [items, search, statusFilter, hideOutOfStock, sortColumn, sortDirection, listingMap]);
+  }, [items, search, statusFilter, stockFilter, sortColumn, sortDirection, listingMap, tagFilter]);
 
   // ─── CRUD ───────────────────────────────────────────────────────────────
 
@@ -156,15 +406,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     setSaving(true);
     try {
       const saved = await window.api.saveItem(itemData);
-      setItems((prev) => {
-        const idx = prev.findIndex((i) => i.id === saved.id);
-        if (idx >= 0) {
-          const copy = [...prev];
-          copy[idx] = saved;
-          return copy;
-        }
-        return [saved, ...prev];
-      });
+      upsertItem(saved);
       setModalOpen(false);
       addToast(itemData.id ? "Item updated" : "Item added", "success");
     } catch {
@@ -182,7 +424,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     setConfirmDeleteItem(null);
     try {
       await window.api.deleteItem(item.id);
-      setItems((prev) => prev.filter((i) => i.id !== item.id));
+      removeItem(item.id);
       setSelected((prev) => {
         const next = new Set(prev);
         next.delete(item.id);
@@ -198,7 +440,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
   const handleQuickStockUpdate = async (item: LocalItem, newStock: number) => {
     try {
       const saved = await window.api.saveItem({ ...item, stock: newStock });
-      setItems((prev) => prev.map((i) => (i.id === saved.id ? saved : i)));
+      upsertItem(saved);
     } catch {
       addToast("Failed to update stock", "error");
     }
@@ -208,7 +450,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
   const handleToggleRelisting = async (item: LocalItem, enabled: boolean) => {
     try {
       const saved = await window.api.saveItem({ ...item, relistingEnabled: enabled });
-      setItems((prev) => prev.map((i) => (i.id === saved.id ? saved : i)));
+      upsertItem(saved);
     } catch {
       addToast("Failed to update relisting setting", "error");
     }
@@ -250,7 +492,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
 
       // Optimistic update — show the new status immediately
       patchListingMap(item.title, { status: asDraft ? "Draft" : "Active", id: vintedId });
-      setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, updatedAt: new Date().toISOString() } : i)));
+      upsertItem({ ...item, updatedAt: new Date().toISOString() });
       setProgress((p) => (p ? { ...p, completed: 1, done: true, currentAction: asDraft ? "Listed as draft" : "Listed on Vinted" } : p));
       // Refresh so Listings page picks up the new listing
       refreshListings().catch(() => {});
@@ -348,7 +590,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
           const vintedItem = (created.item || created) as Record<string, unknown>;
           const vintedId = (vintedItem.id as number) || 0;
           patchListingMap(item.title, { status: asDraft ? "Draft" : "Active", id: vintedId });
-          setItems((prev) => prev.map((i) => (i.id === item.id ? { ...i, updatedAt: new Date().toISOString() } : i)));
+          upsertItem({ ...item, updatedAt: new Date().toISOString() });
         } finally {
           cleanup();
         }
@@ -362,9 +604,65 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
     setBulkListing(false);
   };
 
+  // ─── Bulk edit ──────────────────────────────────────────────────────
+  const handleBulkEdit = async (updates: BulkEditUpdates) => {
+    setShowBulkEdit(false);
+    const selectedItems = filtered.filter((i) => selected.has(i.id));
+    if (selectedItems.length === 0) return;
+
+    let successCount = 0;
+    for (const item of selectedItems) {
+      const patch: Partial<LocalItem> = { ...item };
+      if (updates.price !== undefined) patch.price = updates.price;
+      if (updates.stock !== undefined) patch.stock = updates.stock;
+      if (updates.autoAcceptOfferPercent !== undefined) patch.autoAcceptOfferPercent = updates.autoAcceptOfferPercent;
+      if (updates.tagsMode && updates.tags) {
+        const existing = item.tags ?? [];
+        const incoming = updates.tags;
+        if (updates.tagsMode === "replace") {
+          patch.tags = Array.from(new Set(incoming));
+        } else if (updates.tagsMode === "add") {
+          const merged = [...existing];
+          for (const t of incoming) {
+            if (!merged.some((e) => e.toLowerCase() === t.toLowerCase())) merged.push(t);
+          }
+          patch.tags = merged;
+        } else if (updates.tagsMode === "remove") {
+          const lower = new Set(incoming.map((t) => t.toLowerCase()));
+          patch.tags = existing.filter((t) => !lower.has(t.toLowerCase()));
+        }
+      }
+
+      try {
+        const saved = await window.api.saveItem(patch);
+        upsertItem(saved);
+        successCount++;
+      } catch {
+        addToast(`Failed to update "${item.title}"`, "error");
+      }
+    }
+
+    if (successCount > 0) {
+      addToast(`Updated ${successCount} item(s)`, "success");
+    }
+  };
+
+  // ─── Virtualizer ──────────────────────────────────────────────────────
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: filtered.length,
+    getScrollElement: () => scrollContainerRef.current,
+    estimateSize: () => 57,
+    overscan: 5,
+    getItemKey: useCallback((index: number) => filtered[index]?.id ?? index, [filtered]),
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+
   // ─── Render ─────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4 h-full">
       <FilterBar
         search={search}
         onSearchChange={setSearch}
@@ -374,15 +672,13 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
         statusAllLabel="All statuses"
         actions={
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer select-none whitespace-nowrap">
-              <Checkbox checked={hideOutOfStock} onCheckedChange={(checked) => setHideOutOfStock(checked === true)} />
-              Hide out of stock
-            </label>
+            <StockFilterDropdown stockFilter={stockFilter} onStockFilterChange={setStockFilter} />
+            <TagFilterDropdown allTags={allTags} tagFilter={tagFilter} onTagFilterChange={setTagFilter} />
             {selected.size > 0 && (
               <div className="flex items-center gap-2">
                 <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={bulkListing || !loggedIn}>
+                  <DropdownMenuTrigger>
+                    <Button variant="outline" disabled={bulkListing || !loggedIn}>
                       Bulk Actions
                       <ChevronDownIcon className="w-4 h-4 ml-1" />
                     </Button>
@@ -395,6 +691,10 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
                     <DropdownMenuItem onClick={() => handleBulkList(true)} disabled={bulkListing || !loggedIn}>
                       <DocumentDuplicateIcon className="w-4 h-4" />
                       List as Draft
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={() => setShowBulkEdit(true)}>
+                      <PencilSquareIcon className="w-4 h-4" />
+                      Bulk Edit
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -411,141 +711,69 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
           {items.length === 0 ? "No items yet — add one to get started" : "No matching items"}
         </div>
       ) : (
-        <div>
-          <Card className="p-0">
+        <Card className="p-0 flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div ref={scrollContainerRef} className="overflow-auto flex-1">
             <Table>
-              <TableHeader>
+              <TableHeader className="sticky top-0 z-10 bg-card">
                 <TableRow>
-                  <TableHead className="px-4 py-3 w-10">
+                  <TableHead>
                     <Checkbox checked={selected.size > 0 && selected.size === filtered.length} onCheckedChange={selectAll} />
                   </TableHead>
-                  <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("title")}>
+                  <TableHead className="w-full cursor-pointer select-none" onClick={() => handleSort("title")}>
                     Item
                     <SortArrow column="title" sortColumn={sortColumn} sortDirection={sortDirection} />
                   </TableHead>
-                  <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("description")}>
+                  <TableHead className="cursor-pointer select-none" onClick={() => handleSort("description")}>
                     Description
                     <SortArrow column="description" sortColumn={sortColumn} sortDirection={sortDirection} />
                   </TableHead>
-                  <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("price")}>
+                  <TableHead className="cursor-pointer select-none" onClick={() => handleSort("price")}>
                     Price
                     <SortArrow column="price" sortColumn={sortColumn} sortDirection={sortDirection} />
                   </TableHead>
-                  <TableHead className="px-4 py-3">Relist</TableHead>
-                  <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("stock")}>
+                  <TableHead>Relist</TableHead>
+                  <TableHead className="cursor-pointer select-none" onClick={() => handleSort("stock")}>
                     Stock
                     <SortArrow column="stock" sortColumn={sortColumn} sortDirection={sortDirection} />
                   </TableHead>
-                  <TableHead className="px-4 py-3 cursor-pointer select-none" onClick={() => handleSort("status")}>
+                  <TableHead className="cursor-pointer select-none" onClick={() => handleSort("status")}>
                     Listing Status
                     <SortArrow column="status" sortColumn={sortColumn} sortDirection={sortDirection} />
                   </TableHead>
-                  <TableHead className="px-4 py-3 text-right">Actions</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((item) => {
-                  const itemStatus = getListingStatus(item);
-                  const listed = itemStatus !== "not_listed";
-                  const isItemListing = listingItem === item.id;
-                  const isItemPublishing = publishingItem === item.id;
-
+                {virtualItems.length > 0 && virtualItems[0].start > 0 && <tr style={{ height: virtualItems[0].start }} />}
+                {virtualItems.map((vRow) => {
+                  const item = filtered[vRow.index];
+                  const itemStatus = getListingStatus(item, listingMap);
                   return (
-                    <TableRow key={item.id}>
-                      {/* Checkbox */}
-                      <TableCell className="px-4 py-3">
-                        <Checkbox checked={selected.has(item.id)} onCheckedChange={() => toggleSelect(item.id)} />
-                      </TableCell>
-
-                      {/* Item (thumbnail + title) */}
-                      <TableCell className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          {item.photos.length > 0 && (
-                            <div className="w-10 h-10 rounded bg-muted overflow-hidden flex-shrink-0">
-                              <img src={item.photos[0]} alt="" className="w-full h-full object-cover" />
-                            </div>
-                          )}
-                          <span className="truncate max-w-[350px] font-medium">{item.title}</span>
-                        </div>
-                      </TableCell>
-
-                      {/* Description */}
-                      <TableCell className="px-4 py-3 text-muted-foreground text-xs">
-                        <span className="truncate block max-w-[350px]">{item.description || "—"}</span>
-                      </TableCell>
-
-                      {/* Price */}
-                      <TableCell className="px-4 py-3 font-medium whitespace-nowrap">
-                        {item.price} {item.currency}
-                      </TableCell>
-
-                      {/* Relist toggle */}
-                      <TableCell className="px-4 py-3">
-                        <Switch
-                          checked={item.relistingEnabled !== false}
-                          onCheckedChange={(checked) => handleToggleRelisting(item, checked)}
-                        />
-                      </TableCell>
-
-                      {/* Stock (inline editable) */}
-                      <TableCell className="px-4 py-3">
-                        <StockInput item={item} onSave={(newStock) => handleQuickStockUpdate(item, newStock)} />
-                      </TableCell>
-
-                      {/* Status */}
-                      <TableCell className="px-4 py-3">
-                        {itemStatus === "active" && <Badge variant="active">Active</Badge>}
-                        {itemStatus === "draft" && <Badge variant="waiting">Draft</Badge>}
-                        {itemStatus === "not_listed" && <Badge variant="hidden">Not active</Badge>}
-                      </TableCell>
-
-                      {/* Actions */}
-                      <TableCell className="px-4 py-3">
-                        <div className="flex items-center justify-end">
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="outline" size="icon" className="h-8 w-8">
-                                <EllipsisVerticalIcon className="w-5 h-5" />
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              {!listed && loggedIn && item.stock > 0 && (
-                                <>
-                                  <DropdownMenuItem onClick={() => handleListItem(item)} disabled={isItemListing}>
-                                    <ArrowUpTrayIcon className="w-4 h-4" />
-                                    {isItemListing ? "Listing…" : "List on Vinted"}
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => handleListItem(item, true)} disabled={isItemListing}>
-                                    <ArrowUpTrayIcon className="w-4 h-4" />
-                                    List as draft
-                                  </DropdownMenuItem>
-                                </>
-                              )}
-                              {getListingStatus(item) === "draft" && loggedIn && item.stock > 0 && (
-                                <DropdownMenuItem onClick={() => handlePublishDraft(item)} disabled={isItemPublishing}>
-                                  <ArrowUpTrayIcon className="w-4 h-4" />
-                                  {isItemPublishing ? "Publishing…" : "Publish"}
-                                </DropdownMenuItem>
-                              )}
-                              <DropdownMenuItem onClick={() => openEditModal(item)}>
-                                <PencilSquareIcon className="w-4 h-4" />
-                                Edit
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => handleDelete(item)}>
-                                <TrashIcon className="w-4 h-4" />
-                                Delete
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        </div>
-                      </TableCell>
-                    </TableRow>
+                    <ItemRow
+                      key={item.id}
+                      item={item}
+                      itemStatus={itemStatus}
+                      isSelected={selected.has(item.id)}
+                      isListing={listingItem === item.id}
+                      isPublishing={publishingItem === item.id}
+                      loggedIn={loggedIn}
+                      onToggleSelect={toggleSelect}
+                      onEdit={openEditModal}
+                      onDelete={handleDelete}
+                      onListItem={handleListItem}
+                      onPublishDraft={handlePublishDraft}
+                      onQuickStockUpdate={handleQuickStockUpdate}
+                      onToggleRelisting={handleToggleRelisting}
+                    />
                   );
                 })}
+                {virtualItems.length > 0 && (
+                  <tr style={{ height: virtualizer.getTotalSize() - virtualItems[virtualItems.length - 1].end }} />
+                )}
               </TableBody>
             </Table>
-          </Card>
-        </div>
+          </div>
+        </Card>
       )}
 
       {/* ─── Add / Edit Modal ────────────────────────────────────────────── */}
@@ -567,9 +795,13 @@ const Items: React.FC<ItemsProps> = ({ loggedIn, addToast }) => {
         />
       )}
 
+      {showBulkEdit && (
+        <BulkEditItemsModal selectedCount={selected.size} onConfirm={handleBulkEdit} onCancel={() => setShowBulkEdit(false)} />
+      )}
+
       {progress && <ProgressModal progress={progress} onClose={() => setProgress(null)} />}
     </div>
   );
 };
 
-export default Items;
+export default React.memo(Items);

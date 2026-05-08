@@ -1,3 +1,4 @@
+import { titleKey } from "../shared/lib/match";
 import type { AppSettings, LocalItem, Order } from "../shared/types";
 import { saveItems } from "./persistence";
 import { getDomain } from "./shared/constants";
@@ -32,8 +33,8 @@ export function reduceStockForShippedOrders(orders: Order[], cachedOrders: Order
     }
 
     for (const title of titlesToReduce) {
-      const titleKey = title.toLowerCase().trim();
-      const item = items.find((i) => i.title.toLowerCase().trim() === titleKey);
+      const key = titleKey(title);
+      const item = items.find((i) => titleKey(i.title) === key);
       if (item && item.stock > 0) {
         item.stock -= 1;
         changed = true;

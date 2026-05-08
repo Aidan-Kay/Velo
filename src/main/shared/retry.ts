@@ -2,6 +2,8 @@
  * Retry an async function on transient failures with exponential backoff.
  */
 
+const CHROMIUM_NETWORK_ERROR_RE = /\b(?:net::)?ERR_[A-Z_]+\b/;
+
 interface RetryOptions {
   retries?: number;
   baseDelay?: number;
@@ -55,7 +57,8 @@ export function isTransientError(err: Error & { code?: string; status?: number; 
       err.message.includes("Render frame was disposed") ||
       err.message.includes("ERR_ABORTED") ||
       err.message.includes("Failed to fetch") ||
-      err.message.includes("net::ERR_"))
+      err.message.includes("executeJavaScript timed out") ||
+      CHROMIUM_NETWORK_ERROR_RE.test(err.message))
   ) {
     return true;
   }

@@ -23,6 +23,21 @@ const api: ElectronAPI = {
   getShippingLabelUrl: (shipmentId) => ipcRenderer.invoke("get-shipping-label-url", shipmentId),
   getJourneySummary: (transactionId) => ipcRenderer.invoke("get-journey-summary", transactionId),
   replenishOrderStock: (transactionId) => ipcRenderer.invoke("replenish-order-stock", transactionId),
+  setOrderPacked: (transactionId, packed) => ipcRenderer.invoke("set-order-packed", transactionId, packed),
+
+  // ─── Purchases (cached) ──────────────────────────────────────────────────
+  getMyPurchases: () => ipcRenderer.invoke("get-my-purchases"),
+  refreshMyPurchases: () => ipcRenderer.invoke("refresh-my-purchases"),
+  refreshSinglePurchase: (transactionId) => ipcRenderer.invoke("refresh-single-purchase", transactionId),
+
+  // ─── Received Offers (cached) ─────────────────────────────────────────────
+  getReceivedOffers: () => ipcRenderer.invoke("get-received-offers"),
+  refreshReceivedOffers: () => ipcRenderer.invoke("refresh-received-offers"),
+  acceptOffer: (transactionId, offerRequestId) => ipcRenderer.invoke("accept-offer", transactionId, offerRequestId),
+  counterOffer: (transactionId, price, currency) => ipcRenderer.invoke("counter-offer", transactionId, price, currency),
+  getSellerOfferOptions: (transactionId) => ipcRenderer.invoke("get-seller-offer-options", transactionId),
+  ignoreOffer: (offerRequestId) => ipcRenderer.invoke("ignore-offer", offerRequestId),
+  unignoreOffer: (offerRequestId) => ipcRenderer.invoke("unignore-offer", offerRequestId),
 
   // ─── Listing Actions ──────────────────────────────────────────────────────
   createListing: (itemData, options) => ipcRenderer.invoke("create-listing", itemData, options),
@@ -57,6 +72,12 @@ const api: ElectronAPI = {
   queueForRelist: (itemId, soldAt) => ipcRenderer.invoke("queue-for-relist", itemId, soldAt),
   removeFromRelistQueue: (itemId) => ipcRenderer.invoke("remove-from-relist-queue", itemId),
 
+  // ─── Notifications ─────────────────────────────────────────────────────────
+  getNotifications: () => ipcRenderer.invoke("get-notifications"),
+  markNotificationRead: (id) => ipcRenderer.invoke("mark-notification-read", id),
+  markAllNotificationsRead: () => ipcRenderer.invoke("mark-all-notifications-read"),
+  clearNotifications: () => ipcRenderer.invoke("clear-notifications"),
+
   // ─── Browser ──────────────────────────────────────────────────────────────
   openExternal: (url) => ipcRenderer.invoke("open-external", url),
 
@@ -82,11 +103,25 @@ const api: ElectronAPI = {
       ipcRenderer.off("listings-updated", handler);
     };
   },
+  onListingsDelta: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("listings-delta", handler);
+    return () => {
+      ipcRenderer.off("listings-delta", handler);
+    };
+  },
   onOrdersUpdated: (callback) => {
     const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
     ipcRenderer.on("orders-updated", handler);
     return () => {
       ipcRenderer.off("orders-updated", handler);
+    };
+  },
+  onOrdersDelta: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("orders-delta", handler);
+    return () => {
+      ipcRenderer.off("orders-delta", handler);
     };
   },
   onListingCreationProgress: (callback) => {
@@ -103,6 +138,59 @@ const api: ElectronAPI = {
       ipcRenderer.off("label-generation-progress", handler);
     };
   },
+  onPurchasesDelta: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("purchases-delta", handler);
+    return () => {
+      ipcRenderer.off("purchases-delta", handler);
+    };
+  },
+  onOffersDelta: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("offers-delta", handler);
+    return () => {
+      ipcRenderer.off("offers-delta", handler);
+    };
+  },
+  onOfferAutoAccepted: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("offer-auto-accepted", handler);
+    return () => {
+      ipcRenderer.off("offer-auto-accepted", handler);
+    };
+  },
+  onNotificationsUpdated: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("notifications-updated", handler);
+    return () => {
+      ipcRenderer.off("notifications-updated", handler);
+    };
+  },
+  onNotificationNavigate: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, page: string, referenceId: number) => callback(page, referenceId);
+    ipcRenderer.on("notification-navigate", handler);
+    return () => {
+      ipcRenderer.off("notification-navigate", handler);
+    };
+  },
+
+  // ─── Activity log ─────────────────────────────────────────────────────
+  getLogEntries: (query) => ipcRenderer.invoke("get-log-entries", query),
+  openLogFile: () => ipcRenderer.invoke("open-log-file"),
+  clearLogFile: () => ipcRenderer.invoke("clear-log-file"),
+
+  // ─── Bulk price rule ──────────────────────────────────────────────────
+  applyBulkPriceRule: (input) => ipcRenderer.invoke("apply-bulk-price-rule", input),
+  onBulkPriceProgress: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("bulk-price-progress", handler);
+    return () => {
+      ipcRenderer.off("bulk-price-progress", handler);
+    };
+  },
+
+  // ─── AI assist ────────────────────────────────────────────────────────
+  aiGenerateListingDraft: (itemId) => ipcRenderer.invoke("ai-generate-listing-draft", itemId),
 };
 
 contextBridge.exposeInMainWorld("api", api);

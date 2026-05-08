@@ -1,25 +1,30 @@
-import { app, BrowserWindow, Menu, powerMonitor, screen, Tray } from "electron";
+import { app, BrowserWindow, Menu, net, powerMonitor, protocol, screen, Tray } from "electron";
 import log from "electron-log/main";
 import * as fs from "fs";
 import * as path from "path";
+import { pathToFileURL } from "url";
 
-import type { AppSettings, LocalItem, Order, Pagination, VintedListing } from "../shared/types";
+import type { AppSettings } from "../shared/types";
+import { buildAppStateBundle, createInitialState } from "./app-state";
 import { setupIpc } from "./ipc-handlers";
-import { autoGenerateLabelsForNewOrders, reduceStockForShippedOrders } from "./order-automation";
 import {
+  DEFAULT_SETTINGS,
+  flushAllWrites,
   loadCachedListings,
+  loadCachedOffers,
   loadCachedOrders,
+  loadCachedPurchases,
   loadItems,
+  loadNotifications,
   loadSettings,
   loadWindowState,
-  saveCachedListings,
-  saveCachedOrders,
   saveItems,
   saveWindowState,
 } from "./persistence";
 import { PollingManager } from "./polling";
 import { RelistingManager } from "./relisting";
 import { getDomain } from "./shared/constants";
+import { isTransientError } from "./shared/retry";
 import * as vintedApi from "./vinted/api";
 
 // ─── Logging ──────────────────────────────────────────────────────────────────
@@ -43,21 +48,9 @@ if (!gotLock) {
 }
 
 // ─── Shared Mutable State ─────────────────────────────────────────────────────
-const state: {
-  items: LocalItem[];
-  cachedListings: VintedListing[];
-  cachedListingsPagination: Pagination;
-  cachedOrders: Order[];
-  cachedOrdersPagination: Pagination;
-} = {
-  items: [],
-  cachedListings: [],
-  cachedListingsPagination: {},
-  cachedOrders: [],
-  cachedOrdersPagination: {},
-};
+const state = createInitialState();
 
-let settings: AppSettings = {} as AppSettings;
+let settings: AppSettings = { ...DEFAULT_SETTINGS };
 const getSettings = (): AppSettings => settings;
 const setSettings = (s: AppSettings): void => {
   settings = s;
@@ -68,48 +61,18 @@ const getWindow = (): BrowserWindow | null => mainWindow;
 
 let tray: Tray | null = null;
 let isQuitting = false;
+let resumeRecoveryTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ─── Polling Manager ──────────────────────────────────────────────────────
+// State updates, delta computation, persistence, and renderer push events
+// are encapsulated in app-state.ts. This file only wires the bundle to
+// PollingManager and supplies the domain getter.
+
+const { notifDeps: notificationDeps, pollingCallbacks } = buildAppStateBundle({ state, getSettings, getWindow });
 
 const polling = new PollingManager({
+  ...pollingCallbacks,
   getDomain: () => getDomain(settings.site),
-  getCachedOrders: () => state.cachedOrders,
-  getCachedListings: () => state.cachedListings,
-  onListingsUpdated: (items: VintedListing[], pagination: Pagination) => {
-    state.cachedListings = items;
-    state.cachedListingsPagination = pagination;
-    saveCachedListings({ items, pagination, fetchedAt: new Date().toISOString() });
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("listings-updated", { items, pagination });
-    }
-  },
-  onOrdersUpdated: (orders: Order[], pagination: Pagination) => {
-    // Reduce stock for orders that have just reached the "shipped" stage
-    reduceStockForShippedOrders(orders, state.cachedOrders, settings, state.items);
-
-    // Auto-generate shipping labels for new orders (runs async, doesn't block)
-    const cachedSnapshot = [...state.cachedOrders];
-    void autoGenerateLabelsForNewOrders(orders, cachedSnapshot, settings);
-
-    // Preserve stockReplenished and stockReduced flags from cached orders
-    const cachedMap = new Map(state.cachedOrders.map((o) => [o.transactionId, o]));
-    for (const order of orders) {
-      const cached = order.transactionId ? cachedMap.get(order.transactionId) : null;
-      if (cached?.stockReplenished) {
-        order.stockReplenished = true;
-      }
-      if (cached?.stockReduced) {
-        order.stockReduced = true;
-      }
-    }
-
-    state.cachedOrders = orders;
-    state.cachedOrdersPagination = pagination;
-    saveCachedOrders({ orders, pagination, fetchedAt: new Date().toISOString() });
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("orders-updated", { orders, pagination });
-    }
-  },
 });
 
 // ─── Second Instance ──────────────────────────────────────────────────────────
@@ -171,9 +134,9 @@ function createWindow(): void {
           "Content-Security-Policy": [
             "default-src 'self';" +
               " script-src 'self';" +
-              " style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;" +
-              " font-src https://fonts.gstatic.com;" +
-              " img-src 'self' file: data: https://*.vinted.co.uk https://*.vinted.fr https://*.vinted.de https://*.vinted.be https://*.vinted.es https://*.vinted.it https://*.vinted.nl https://*.vinted.pl https://*.vinted.com https://*.vinted.net;",
+              " style-src 'self' 'unsafe-inline';" +
+              " font-src 'self';" +
+              " img-src 'self' file: local-file: data: https://*.vinted.co.uk https://*.vinted.fr https://*.vinted.de https://*.vinted.be https://*.vinted.es https://*.vinted.it https://*.vinted.nl https://*.vinted.pl https://*.vinted.com https://*.vinted.net;",
           ],
         },
       });
@@ -280,21 +243,106 @@ const relistingManager = new RelistingManager({
   onRelist: handleRelist,
 });
 
+// ─── Custom Protocol ──────────────────────────────────────────────────────────
+// Register a custom 'local-file' protocol so the renderer can load local item
+// photos when served from http://localhost (Vite dev server).
+protocol.registerSchemesAsPrivileged([
+  { scheme: "local-file", privileges: { standard: false, secure: true, supportFetchAPI: true, stream: true } },
+]);
+
 // ─── App Lifecycle ────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
-  settings = loadSettings();
-  state.items = loadItems();
+app.whenReady().then(async () => {
+  const clearResumeRecoveryTimer = (): void => {
+    if (resumeRecoveryTimer) {
+      clearTimeout(resumeRecoveryTimer);
+      resumeRecoveryTimer = null;
+    }
+  };
 
-  // Load cached listings/orders from disk
-  const cachedListings = loadCachedListings();
-  state.cachedListings = cachedListings.items;
-  state.cachedListingsPagination = cachedListings.pagination;
-  const cachedOrders = loadCachedOrders();
-  state.cachedOrders = cachedOrders.orders;
-  state.cachedOrdersPagination = cachedOrders.pagination;
+  const runPostResumeRecovery = (attempt = 1): void => {
+    clearResumeRecoveryTimer();
+    console.log(`[main] Resume recovery attempt ${attempt}`);
+    vintedApi.resetClientWindow();
 
-  setupIpc(state, getSettings, setSettings, getWindow, polling, relistingManager);
+    const resumeDomain = getDomain(settings.site);
+    vintedApi
+      .checkSession(resumeDomain)
+      .then((result) => {
+        clearResumeRecoveryTimer();
+        console.log(`[main] Post-resume session check: loggedIn=${result.loggedIn}`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send("session-status", result);
+        }
+
+        if (result.loggedIn) {
+          polling.recoverAfterResume();
+          return;
+        }
+
+        polling.stop();
+      })
+      .catch((err: Error) => {
+        if (isTransientError(err)) {
+          const delay = Math.min(30_000, Math.max(5_000, attempt * 5_000));
+          console.warn(
+            `[main] Post-resume session check failed on attempt ${attempt}: ${err.message}. Retrying in ${Math.round(delay / 1000)}s`,
+          );
+          resumeRecoveryTimer = setTimeout(() => runPostResumeRecovery(attempt + 1), delay);
+          return;
+        }
+
+        console.warn("[main] Post-resume session check failed:", err.message);
+      });
+  };
+
+  // Handle local-file:// requests by resolving to file:// paths
+  protocol.handle("local-file", (request) => {
+    // Extract the filesystem path from the custom URL and convert properly
+    // local-file://C:/Users/... → file:///C:/Users/... (pathToFileURL handles platform differences)
+    const filePath = decodeURIComponent(request.url.replace(/^local-file:\/\/\/?/, ""));
+    return net.fetch(pathToFileURL(filePath).href);
+  });
+
+  // Load all persisted data in parallel (async I/O)
+  const [loadedSettings, loadedItems, loadedListings, loadedOrders, loadedPurchases, loadedOffers, loadedNotifications] = await Promise.all(
+    [loadSettings(), loadItems(), loadCachedListings(), loadCachedOrders(), loadCachedPurchases(), loadCachedOffers(), loadNotifications()],
+  );
+
+  settings = loadedSettings;
+  state.items = loadedItems;
+  state.cachedListings = loadedListings.items;
+  state.cachedListingsPagination = loadedListings.pagination;
+  state.cachedOrders = loadedOrders.orders;
+  state.cachedOrdersPagination = loadedOrders.pagination;
+  state.cachedPurchases = loadedPurchases.purchases;
+  state.cachedPurchasesPagination = loadedPurchases.pagination;
+  state.cachedOffers = loadedOffers.offers;
+  state.lastOfferPollTimestamp = loadedOffers.lastPollTimestamp;
+  state.notifications = loadedNotifications;
+
+  // One-time migration: legacy photo URLs → local-file:/// protocol
+  let itemsMigrated = false;
+  for (const item of state.items) {
+    if (item.photos) {
+      const migrated = item.photos.map((p) => {
+        // Legacy file:// → local-file:///
+        if (p.startsWith("file://")) return p.replace("file://", "local-file://");
+        // Fix two-slash local-file:// → three-slash local-file:///
+        if (p.startsWith("local-file://") && !p.startsWith("local-file:///")) {
+          return p.replace("local-file://", "local-file:///");
+        }
+        return p;
+      });
+      if (migrated.some((p, i) => p !== item.photos[i])) {
+        item.photos = migrated;
+        itemsMigrated = true;
+      }
+    }
+  }
+  if (itemsMigrated) saveItems(state.items);
+
+  setupIpc({ state, getSettings, setSettings, getWindow, polling, relisting: relistingManager, notifDeps: notificationDeps });
   createWindow();
   createTray();
 
@@ -318,32 +366,29 @@ app.whenReady().then(() => {
     });
 
   // Reset the hidden browser window after sleep so the next API call gets a fresh context
-  powerMonitor.on("resume", () => {
-    console.log("[main] System resumed from sleep — resetting Vinted client window");
-    vintedApi.resetClientWindow();
+  powerMonitor.on("suspend", () => {
+    console.log("[main] System suspending — stopping polling so no fetches are mid-flight at sleep");
+    polling.stop();
+  });
 
-    // Re-validate session — if still valid, polling will recover on its next tick;
-    // if not, notify the renderer so the user can re-login
-    const resumeDomain = getDomain(settings.site);
-    vintedApi
-      .checkSession(resumeDomain)
-      .then((result) => {
-        console.log(`[main] Post-resume session check: loggedIn=${result.loggedIn}`);
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send("session-status", result);
-        }
-        if (result.loggedIn) {
-          polling.start(); // idempotent — ensures polling is running
-        }
-      })
-      .catch((err: Error) => {
-        console.warn("[main] Post-resume session check failed:", err.message);
-      });
+  powerMonitor.on("resume", () => {
+    console.log("[main] System resumed from sleep — checking session and rebuilding polling timers");
+    runPostResumeRecovery();
   });
 });
 
 app.on("before-quit", () => {
   isQuitting = true;
+  if (resumeRecoveryTimer) {
+    clearTimeout(resumeRecoveryTimer);
+    resumeRecoveryTimer = null;
+  }
+  // Flush any pending debounced writes synchronously so the final state is persisted.
+  try {
+    flushAllWrites();
+  } catch (err) {
+    console.error("[main] flushAllWrites failed:", (err as Error).message);
+  }
   if (tray) {
     tray.destroy();
     tray = null;

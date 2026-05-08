@@ -1,8 +1,9 @@
+import { Button } from "@shared/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@shared/components/ui/dialog";
+import { Input } from "@shared/components/ui/input";
+import { Label } from "@shared/components/ui/label";
+import { Switch } from "@shared/components/ui/switch";
 import React, { useState } from "react";
-import { Button } from "./ui/button";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Switch } from "./ui/switch";
 
 // ─── Single Repost Listing Modal ──────────────────────────────────────────────
 
@@ -18,10 +19,17 @@ export const SingleRepostListingModal: React.FC<SingleRepostListingProps> = ({ t
   const [asDraft, setAsDraft] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-card rounded-lg border border-border p-6 w-full max-w-sm space-y-4">
-        <h3 className="text-base font-semibold text-foreground">Repost Listing</h3>
-        <p className="text-xs text-muted-foreground truncate">{title}</p>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-sm" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>Repost Listing</DialogTitle>
+          <DialogDescription className="truncate">{title}</DialogDescription>
+        </DialogHeader>
 
         <div className="space-y-2">
           <Label>Price</Label>
@@ -33,16 +41,14 @@ export const SingleRepostListingModal: React.FC<SingleRepostListingProps> = ({ t
           <Switch checked={asDraft} onCheckedChange={setAsDraft} />
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <Button variant="outline" size="sm" onClick={onCancel}>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>
             Cancel
           </Button>
-          <Button size="sm" onClick={() => onConfirm(price, asDraft)}>
-            Repost
-          </Button>
-        </div>
-      </div>
-    </div>
+          <Button onClick={() => onConfirm(price, asDraft)}>Repost</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };
 
@@ -58,25 +64,30 @@ export const BulkRepostListingModal: React.FC<BulkRepostListingProps> = ({ selec
   const [asDraft, setAsDraft] = useState(false);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="bg-card rounded-lg border border-border p-6 w-full max-w-sm space-y-4">
-        <h3 className="text-base font-semibold text-foreground">Bulk Repost</h3>
-        <p className="text-xs text-muted-foreground">{selectedCount} listing(s) selected</p>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-sm" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle>Bulk Repost</DialogTitle>
+          <DialogDescription>{selectedCount} listing(s) selected</DialogDescription>
+        </DialogHeader>
 
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">Create as draft</span>
           <Switch checked={asDraft} onCheckedChange={setAsDraft} />
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <Button variant="outline" size="sm" onClick={onCancel}>
+        <DialogFooter>
+          <Button variant="outline" onClick={onCancel}>
             Cancel
           </Button>
-          <Button size="sm" onClick={() => onConfirm(asDraft)}>
-            Start
-          </Button>
-        </div>
-      </div>
-    </div>
+          <Button onClick={() => onConfirm(asDraft)}>Start</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };

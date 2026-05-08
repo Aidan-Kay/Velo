@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { titleKey } from "../../../shared/lib/match";
 import type { LocalItem, VintedListing } from "../../../shared/types";
 import type { ProgressState } from "../components/ProgressModal";
 import { runBulkOperation } from "./useBulkOperation";
@@ -23,12 +24,14 @@ export interface ListingActions {
   repostListing: VintedListing | null;
   showBulkRepostConfig: boolean;
   progress: ProgressState | null;
+  duplicateListing: VintedListing | null;
 
   // State setters (for modals/UI)
   setConfirmDeleteListing: React.Dispatch<React.SetStateAction<VintedListing | null>>;
   setRepostListing: React.Dispatch<React.SetStateAction<VintedListing | null>>;
   setShowBulkRepostConfig: React.Dispatch<React.SetStateAction<boolean>>;
   setProgress: React.Dispatch<React.SetStateAction<ProgressState | null>>;
+  setDuplicateListing: React.Dispatch<React.SetStateAction<VintedListing | null>>;
 
   // Helpers
   isSavedAsItem: (listing: VintedListing) => boolean;
@@ -41,10 +44,12 @@ export interface ListingActions {
   handleRefreshListing: (listing: VintedListing) => Promise<void>;
   openRepostModal: (listing: VintedListing) => void;
   handleRepost: (repostPrice: string, repostAsDraft: boolean) => Promise<void>;
+  handleDuplicateListing: (copyPhotos: boolean, asDraft: boolean) => Promise<void>;
 
   // Bulk actions
   handleBulkRepost: (asDraft: boolean, selected: Set<number>, filtered: VintedListing[]) => Promise<void>;
   handleBulkPublish: (selected: Set<number>, filtered: VintedListing[]) => Promise<void>;
+  handleBulkDelete: (selected: Set<number>, filtered: VintedListing[]) => Promise<void>;
   handleBulkSave: (selected: Set<number>, filtered: VintedListing[]) => Promise<void>;
   handleBulkRefresh: (selected: Set<number>, filtered: VintedListing[]) => Promise<void>;
 
@@ -136,6 +141,9 @@ export function useListingActions({
   // Single repost modal
   const [repostListing, setRepostListing] = useState<VintedListing | null>(null);
 
+  // Duplicate listing modal
+  const [duplicateListing, setDuplicateListing] = useState<VintedListing | null>(null);
+
   // Bulk repost config modal
   const [showBulkRepostConfig, setShowBulkRepostConfig] = useState(false);
 
@@ -147,15 +155,13 @@ export function useListingActions({
 
   // ─── Helpers ─────────────────────────────────────────────────────────
 
-  const isSavedAsItem = useCallback(
-    (listing: VintedListing): boolean => savedItems.some((item) => item.title.toLowerCase().trim() === listing.title.toLowerCase().trim()),
-    [savedItems],
-  );
+  const savedItemsByKey = useMemo(() => new Map(savedItems.map((item) => [titleKey(item.title), item])), [savedItems]);
+
+  const isSavedAsItem = useCallback((listing: VintedListing): boolean => savedItemsByKey.has(titleKey(listing.title)), [savedItemsByKey]);
 
   const findExistingItem = useCallback(
-    (listing: VintedListing): LocalItem | undefined =>
-      savedItems.find((item) => item.title.toLowerCase().trim() === listing.title.toLowerCase().trim()),
-    [savedItems],
+    (listing: VintedListing): LocalItem | undefined => savedItemsByKey.get(titleKey(listing.title)),
+    [savedItemsByKey],
   );
 
   // ─── Delete ──────────────────────────────────────────────────────────
@@ -229,6 +235,50 @@ export function useListingActions({
 
   const openRepostModal = (listing: VintedListing) => setRepostListing(listing);
 
+  const handleDuplicateListing = async (copyPhotos: boolean, asDraft: boolean) => {
+    if (!duplicateListing) return;
+    const listing = duplicateListing;
+    setDuplicateListing(null);
+
+    const photoCount = listing.photos?.length ?? 0;
+    const totalSteps = (copyPhotos ? photoCount : 0) + 1 + (asDraft ? 0 : 1);
+
+    setProgress({
+      title: "Duplicating Listing",
+      total: 1,
+      completed: 0,
+      failed: 0,
+      currentTitle: listing.title,
+      currentAction: "Fetching listing detail…",
+      done: false,
+      itemStep: 1,
+      itemStepTotal: totalSteps,
+    });
+
+    const cleanup = window.api.onListingCreationProgress(({ step, current }) => {
+      setProgress((p) => (p ? { ...p, itemStep: current, itemStepTotal: totalSteps, currentAction: step + "…" } : p));
+    });
+
+    try {
+      const itemData = await buildItemFromListing(listing, undefined);
+      if (!copyPhotos) {
+        itemData.photos = [];
+      }
+      delete itemData.id;
+
+      setProgress((p) => (p ? { ...p, currentAction: asDraft ? "Creating draft listing…" : "Creating listing…" } : p));
+      await window.api.createListing(itemData, { asDraft });
+
+      setProgress((p) => (p ? { ...p, completed: 1, done: true, currentAction: "Done" } : p));
+      addToast(`Duplicated "${listing.title}"`, "success");
+      refreshListings().catch(() => {});
+    } catch (err) {
+      setProgress((p) => (p ? { ...p, failed: 1, done: true, currentAction: `Failed: ${(err as Error).message}` } : p));
+    } finally {
+      cleanup();
+    }
+  };
+
   const handleRepost = async (repostPrice: string, repostAsDraft: boolean) => {
     if (!repostListing) return;
     const listing = repostListing;
@@ -278,28 +328,58 @@ export function useListingActions({
 
   // ─── Bulk repost ─────────────────────────────────────────────────
 
-  const handleBulkRepost = async (bulkRepostAsDraft: boolean, selected: Set<number>, filtered: VintedListing[]) => {
-    const selectedListings = filtered.filter((l) => selected.has(l.id));
-    const repostable = selectedListings.filter((l) => isSavedAsItem(l));
+  /** Shared boilerplate for bulk listing actions: filter, load settings, run, refresh, clear. */
+  const runListingBulk = async (
+    title: string,
+    selected: Set<number>,
+    filtered: VintedListing[],
+    options: {
+      filterPredicate?: (listing: VintedListing) => boolean;
+      emptyMessage?: string;
+      action: Parameters<typeof runBulkOperation<VintedListing>>[0]["action"];
+      onComplete?: () => void;
+      // Override the default min/max intervals from settings.
+      minIntervalMs?: number;
+      maxIntervalMs?: number;
+    },
+  ) => {
+    let listings = filtered.filter((l) => selected.has(l.id));
+    if (options.filterPredicate) listings = listings.filter(options.filterPredicate);
 
-    if (repostable.length === 0) {
-      addToast("No selected listings have saved items — save them as items first", "error");
+    if (listings.length === 0) {
+      if (options.emptyMessage) addToast(options.emptyMessage, "error");
       return;
     }
 
-    const settings = await window.api.getSettings();
-    const minMs = (settings.bulkRepost?.minIntervalSeconds ?? 30) * 1000;
-    const maxMs = (settings.bulkRepost?.maxIntervalSeconds ?? 60) * 1000;
+    let minMs = options.minIntervalMs;
+    let maxMs = options.maxIntervalMs;
+    if (minMs == null || maxMs == null) {
+      const settings = await window.api.getSettings();
+      minMs = (settings.bulkRepost?.minIntervalSeconds ?? 30) * 1000;
+      maxMs = (settings.bulkRepost?.maxIntervalSeconds ?? 60) * 1000;
+    }
 
     cancelledRef.current = false;
 
     await runBulkOperation({
-      items: repostable,
-      title: `Reposting ${repostable.length} listing(s)`,
+      items: listings,
+      title,
       cancelledRef,
       setProgress,
       minIntervalMs: minMs,
       maxIntervalMs: maxMs,
+      action: options.action,
+      onComplete: () => {
+        options.onComplete?.();
+        clearSelection();
+      },
+    });
+  };
+
+  const handleBulkRepost = async (bulkRepostAsDraft: boolean, selected: Set<number>, filtered: VintedListing[]) =>
+    runListingBulk(`Reposting ${filtered.filter((l) => selected.has(l.id) && isSavedAsItem(l)).length} listing(s)`, selected, filtered, {
+      filterPredicate: isSavedAsItem,
+      emptyMessage: "No selected listings have saved items — save them as items first",
       action: async (listing, updateAction, updateItemStep) => {
         const item = findExistingItem(listing);
         const photoCount = item!.photos?.length ?? 0;
@@ -334,58 +414,42 @@ export function useListingActions({
       },
       onComplete: () => {
         refreshListings().catch(() => {});
-        clearSelection();
       },
     });
-  };
 
-  // ─── Bulk publish ────────────────────────────────────────────────
+  const handleBulkPublish = async (selected: Set<number>, filtered: VintedListing[]) =>
+    runListingBulk(
+      `Publishing ${filtered.filter((l) => selected.has(l.id) && l.status.toLowerCase() === "draft").length} draft(s)`,
+      selected,
+      filtered,
+      {
+        filterPredicate: (l) => l.status.toLowerCase() === "draft",
+        emptyMessage: "No draft listings selected",
+        action: async (listing, updateAction) => {
+          updateAction("Publishing draft…");
+          await window.api.publishListing(listing.id);
+          patchListingMap(listing.title, { status: "Active", id: listing.id });
+        },
+        onComplete: () => {
+          refreshListings().catch(() => {});
+        },
+      },
+    );
 
-  const handleBulkPublish = async (selected: Set<number>, filtered: VintedListing[]) => {
-    const drafts = filtered.filter((l) => selected.has(l.id) && l.status.toLowerCase() === "draft");
-    if (drafts.length === 0) {
-      addToast("No draft listings selected", "error");
-      return;
-    }
-
-    const settings = await window.api.getSettings();
-    const minMs = (settings.bulkRepost?.minIntervalSeconds ?? 30) * 1000;
-    const maxMs = (settings.bulkRepost?.maxIntervalSeconds ?? 60) * 1000;
-
-    cancelledRef.current = false;
-
-    await runBulkOperation({
-      items: drafts,
-      title: `Publishing ${drafts.length} draft(s)`,
-      cancelledRef,
-      setProgress,
-      minIntervalMs: minMs,
-      maxIntervalMs: maxMs,
+  const handleBulkDelete = async (selected: Set<number>, filtered: VintedListing[]) =>
+    runListingBulk(`Deleting ${filtered.filter((l) => selected.has(l.id)).length} listing(s)`, selected, filtered, {
       action: async (listing, updateAction) => {
-        updateAction("Publishing draft…");
-        await window.api.publishListing(listing.id);
-        patchListingMap(listing.title, { status: "Active", id: listing.id });
+        updateAction("Deleting listing…");
+        await window.api.deleteListing(listing.id, listing.status.toLowerCase() === "draft");
+        patchListingMap(listing.title, null);
       },
       onComplete: () => {
         refreshListings().catch(() => {});
-        clearSelection();
       },
     });
-  };
 
-  // ─── Bulk save as item ───────────────────────────────────────────
-
-  const handleBulkSave = async (selected: Set<number>, filtered: VintedListing[]) => {
-    const selectedListings = filtered.filter((l) => selected.has(l.id));
-    if (selectedListings.length === 0) return;
-
-    cancelledRef.current = false;
-
-    await runBulkOperation({
-      items: selectedListings,
-      title: `Saving ${selectedListings.length} listing(s) as items`,
-      cancelledRef,
-      setProgress,
+  const handleBulkSave = async (selected: Set<number>, filtered: VintedListing[]) =>
+    runListingBulk(`Saving ${filtered.filter((l) => selected.has(l.id)).length} listing(s) as items`, selected, filtered, {
       minIntervalMs: 0,
       maxIntervalMs: 0,
       action: async (listing, updateAction) => {
@@ -394,35 +458,18 @@ export function useListingActions({
       },
       onComplete: () => {
         refreshSavedItems();
-        clearSelection();
       },
     });
-  };
 
-  // ─── Bulk refresh ────────────────────────────────────────────────
-
-  const handleBulkRefresh = async (selected: Set<number>, filtered: VintedListing[]) => {
-    const selectedListings = filtered.filter((l) => selected.has(l.id));
-    if (selectedListings.length === 0) return;
-
-    cancelledRef.current = false;
-
-    await runBulkOperation({
-      items: selectedListings,
-      title: `Refreshing ${selectedListings.length} listing(s)`,
-      cancelledRef,
-      setProgress,
+  const handleBulkRefresh = async (selected: Set<number>, filtered: VintedListing[]) =>
+    runListingBulk(`Refreshing ${filtered.filter((l) => selected.has(l.id)).length} listing(s)`, selected, filtered, {
       minIntervalMs: 500,
       maxIntervalMs: 1500,
       action: async (listing, updateAction) => {
         updateAction("Refreshing…");
         await refreshSingleListing(listing.id);
       },
-      onComplete: () => {
-        clearSelection();
-      },
     });
-  };
 
   return {
     publishingId,
@@ -431,10 +478,12 @@ export function useListingActions({
     repostListing,
     showBulkRepostConfig,
     progress,
+    duplicateListing,
     setConfirmDeleteListing,
     setRepostListing,
     setShowBulkRepostConfig,
     setProgress,
+    setDuplicateListing,
     isSavedAsItem,
     handleDelete,
     confirmDelete,
@@ -443,8 +492,10 @@ export function useListingActions({
     handleRefreshListing,
     openRepostModal,
     handleRepost,
+    handleDuplicateListing,
     handleBulkRepost,
     handleBulkPublish,
+    handleBulkDelete,
     handleBulkSave,
     handleBulkRefresh,
     cancelledRef,

@@ -1,17 +1,14 @@
 import { XMarkIcon } from "@heroicons/react/20/solid";
+import { Button } from "@shared/components/ui/button";
+import { Card } from "@shared/components/ui/card";
+import { Input } from "@shared/components/ui/input";
+import { Label } from "@shared/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@shared/components/ui/select";
+import { Switch } from "@shared/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@shared/components/ui/tooltip";
 import React, { useCallback, useEffect, useState } from "react";
-import type { AppSettings, LabelPrinterSettings, PrinterInfo, RelistEntry } from "../../../shared/types";
-import { Button } from "../components/ui/button";
-import { Card } from "../components/ui/card";
-import { Input } from "../components/ui/input";
-import { Label } from "../components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
-import { Switch } from "../components/ui/switch";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-
-interface SettingsProps {
-  addToast: (message: string, type?: "success" | "error" | "info") => void;
-}
+import type { AiAssistSettings, AppSettings, LabelPrinterSettings, PriceRulePreset, PrinterInfo, RelistEntry } from "../../../shared/types";
+import { useToast } from "../context/ToastContext";
 
 const VINTED_SITES: { value: string; label: string }[] = [
   { value: "fr", label: "Vinted.fr (France)" },
@@ -29,7 +26,8 @@ const VINTED_SITES: { value: string; label: string }[] = [
   { value: "com", label: "Vinted.com (US)" },
 ];
 
-const Settings: React.FC<SettingsProps> = ({ addToast }) => {
+const Settings: React.FC = () => {
+  const { addToast } = useToast();
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [relistQueue, setRelistQueue] = useState<RelistEntry[]>([]);
   const [saving, setSaving] = useState(false);
@@ -158,6 +156,17 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
           </div>
           <Switch checked={settings.minimizeToTray} onCheckedChange={(checked) => updateSetting("minimizeToTray", checked)} />
         </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm text-foreground">Desktop notifications</span>
+            <p className="text-xs text-muted-foreground">Show Windows notifications for new orders and offers</p>
+          </div>
+          <Switch
+            checked={settings.enableNativeNotifications}
+            onCheckedChange={(checked) => updateSetting("enableNativeNotifications", checked)}
+          />
+        </div>
       </Card>
 
       {/* ─── Site Selection ──────────────────────────────────────────────── */}
@@ -213,6 +222,61 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
             onChange={(e) => updateRelisting("delayMinutes", parseInt(e.target.value, 10) || 0)}
           />
           <p className="text-xs text-muted-foreground">How long to wait after a sale before relisting (0 = immediate)</p>
+        </div>
+
+        {/* ─── Scheduled start ──────────────────────────────────────────── */}
+        <div className="pt-2 border-t border-border/40 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="text-sm text-foreground">Scheduled start time</span>
+              <p className="text-xs text-muted-foreground">
+                Defer the next due relist until a specific time of day (HH:MM, local). Once a relist runs, the gate clears.
+              </p>
+            </div>
+            <Switch
+              checked={settings.relistScheduledStart.enabled}
+              onCheckedChange={(checked) =>
+                setSettings((prev) => (prev ? { ...prev, relistScheduledStart: { ...prev.relistScheduledStart, enabled: checked } } : prev))
+              }
+            />
+          </div>
+
+          {settings.relistScheduledStart.enabled && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Input
+                  type="time"
+                  className="w-32"
+                  value={settings.relistScheduledStart.time ?? ""}
+                  onChange={(e) =>
+                    setSettings((prev) =>
+                      prev ? { ...prev, relistScheduledStart: { ...prev.relistScheduledStart, time: e.target.value || null } } : prev,
+                    )
+                  }
+                />
+                <div className="flex items-center gap-1">
+                  {["17:00", "18:00", "19:00", "20:00"].map((t) => {
+                    const label = `${parseInt(t.split(":")[0], 10) - 12} PM`;
+                    return (
+                      <Button
+                        key={t}
+                        type="button"
+                        size="sm"
+                        variant={settings.relistScheduledStart.time === t ? "default" : "outline"}
+                        onClick={() =>
+                          setSettings((prev) =>
+                            prev ? { ...prev, relistScheduledStart: { ...prev.relistScheduledStart, time: t } } : prev,
+                          )
+                        }
+                      >
+                        {label}
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 
@@ -358,8 +422,331 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
         )}
       </Card>
 
+      {/* ─── Polling Intervals ───────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">Polling Intervals</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">How often each resource is checked for updates (in minutes)</p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          {(
+            [
+              ["ordersMinutes", "Orders"],
+              ["listingsMinutes", "Listings"],
+              ["purchasesMinutes", "Purchases"],
+              ["offersMinutes", "Offers"],
+            ] as const
+          ).map(([key, label]) => (
+            <div key={key} className="space-y-1.5">
+              <Label>{label}</Label>
+              <Input
+                type="number"
+                min="1"
+                className="w-32"
+                value={settings.pollingIntervals[key]}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  if (!Number.isNaN(val) && val >= 1) {
+                    setSettings((prev) => (prev ? { ...prev, pollingIntervals: { ...prev.pollingIntervals, [key]: val } } : prev));
+                  }
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* ─── Auto-Accept Offers ──────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">Auto-Accept Offers</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Automatically accept buyer offers that meet or exceed a percentage of the listing price
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm text-foreground">Enable auto-accept</span>
+            <p className="text-xs text-muted-foreground">
+              {settings.autoAcceptOfferPercent !== null
+                ? `Offers at or above ${settings.autoAcceptOfferPercent}% of the listing price will be auto-accepted`
+                : "Disabled — no offers will be auto-accepted"}
+            </p>
+          </div>
+          <Switch
+            checked={settings.autoAcceptOfferPercent !== null}
+            onCheckedChange={(checked) => updateSetting("autoAcceptOfferPercent", checked ? 90 : null)}
+          />
+        </div>
+
+        {settings.autoAcceptOfferPercent !== null && (
+          <div className="space-y-1.5">
+            <Label>Minimum percentage (%)</Label>
+            <Input
+              type="number"
+              min="1"
+              max="100"
+              className="w-32"
+              value={settings.autoAcceptOfferPercent}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!Number.isNaN(val) && val >= 1 && val <= 100) {
+                  updateSetting("autoAcceptOfferPercent", val);
+                }
+              }}
+            />
+            <p className="text-xs text-muted-foreground">Per-item overrides can be set in each item's edit form</p>
+          </div>
+        )}
+      </Card>
+
+      {/* ─── Auto-Ignore Offers ──────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">Auto-Ignore Offers</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Automatically mark buyer offers below a percentage of the listing price as ignored
+          </p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div>
+            <span className="text-sm text-foreground">Enable auto-ignore</span>
+            <p className="text-xs text-muted-foreground">
+              {settings.autoIgnoreOfferPercent !== null
+                ? `Offers below ${settings.autoIgnoreOfferPercent}% of the listing price will be auto-ignored`
+                : "Disabled — no offers will be auto-ignored"}
+            </p>
+          </div>
+          <Switch
+            checked={settings.autoIgnoreOfferPercent !== null}
+            onCheckedChange={(checked) => updateSetting("autoIgnoreOfferPercent", checked ? 50 : null)}
+          />
+        </div>
+
+        {settings.autoIgnoreOfferPercent !== null && (
+          <div className="space-y-1.5">
+            <Label>Maximum percentage (%)</Label>
+            <Input
+              type="number"
+              min="1"
+              max="100"
+              className="w-32"
+              value={settings.autoIgnoreOfferPercent}
+              onChange={(e) => {
+                const val = parseInt(e.target.value, 10);
+                if (!Number.isNaN(val) && val >= 1 && val <= 100) {
+                  updateSetting("autoIgnoreOfferPercent", val);
+                }
+              }}
+            />
+          </div>
+        )}
+      </Card>
+
+      {/* ─── Price Rule Presets ──────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">Price Rule Presets</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Quick presets for the bulk price rule on the Listings page</p>
+        </div>
+
+        <div className="space-y-2">
+          {settings.priceRulePresets.map((preset, idx) => (
+            <div key={preset.id} className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="number"
+                  min="1"
+                  max="99"
+                  className="w-20"
+                  value={preset.percentOff}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v) && v > 0 && v < 100) {
+                      setSettings((prev) => {
+                        if (!prev) return prev;
+                        const next = [...prev.priceRulePresets];
+                        next[idx] = { ...next[idx], percentOff: v };
+                        return { ...prev, priceRulePresets: next };
+                      });
+                    }
+                  }}
+                />
+                <span className="text-xs text-muted-foreground">% off</span>
+              </div>
+              <span className="text-xs text-muted-foreground">·</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">older than</span>
+                <Input
+                  type="number"
+                  min="0"
+                  className="w-20"
+                  value={preset.olderThanDays}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v) && v >= 0) {
+                      setSettings((prev) => {
+                        if (!prev) return prev;
+                        const next = [...prev.priceRulePresets];
+                        next[idx] = { ...next[idx], olderThanDays: v };
+                        return { ...prev, priceRulePresets: next };
+                      });
+                    }
+                  }}
+                />
+                <span className="text-xs text-muted-foreground">days</span>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="ml-auto text-red-400 hover:text-red-300"
+                onClick={() =>
+                  setSettings((prev) => (prev ? { ...prev, priceRulePresets: prev.priceRulePresets.filter((_, i) => i !== idx) } : prev))
+                }
+              >
+                <XMarkIcon className="w-4 h-4" />
+              </Button>
+            </div>
+          ))}
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const newPreset: PriceRulePreset = {
+                id: `preset-${Date.now()}`,
+                percentOff: 5,
+                olderThanDays: 7,
+              };
+              setSettings((prev) => (prev ? { ...prev, priceRulePresets: [...prev.priceRulePresets, newPreset] } : prev));
+            }}
+          >
+            Add preset
+          </Button>
+        </div>
+      </Card>
+
+      {/* ─── AI Assist ──────────────────────────────────────────────────── */}
+      <Card className="p-5 space-y-4">
+        <div>
+          <h3 className="text-base font-medium text-foreground">AI Assist</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Generate listing titles and descriptions from photos. Up to 3 photos are sent per request.
+          </p>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Provider</Label>
+          <div className="flex gap-2">
+            {(["openai", "ollama", "llamacpp"] as const).map((provider) => (
+              <Button
+                key={provider}
+                type="button"
+                size="sm"
+                variant={settings.aiAssist.provider === provider ? "default" : "outline"}
+                onClick={() =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, provider } as AiAssistSettings } : prev))
+                }
+              >
+                {provider === "openai" ? "OpenAI" : provider === "ollama" ? "Ollama" : "llama.cpp"}
+              </Button>
+            ))}
+          </div>
+        </div>
+
+        {settings.aiAssist.provider === "openai" && (
+          <>
+            <div className="space-y-1.5">
+              <Label>OpenAI API key</Label>
+              <Input
+                type="password"
+                placeholder="sk-…"
+                value={settings.aiAssist.openaiApiKey ?? ""}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, openaiApiKey: e.target.value } } : prev))
+                }
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Model</Label>
+              <Input
+                placeholder="gpt-4o-mini"
+                value={settings.aiAssist.openaiModel ?? ""}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, openaiModel: e.target.value } } : prev))
+                }
+              />
+            </div>
+          </>
+        )}
+
+        {settings.aiAssist.provider === "ollama" && (
+          <>
+            <div className="space-y-1.5">
+              <Label>Endpoint</Label>
+              <Input
+                placeholder="http://localhost:11434"
+                value={settings.aiAssist.ollamaEndpoint ?? ""}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, ollamaEndpoint: e.target.value } } : prev))
+                }
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Model</Label>
+              <Input
+                placeholder="llama3.2-vision"
+                value={settings.aiAssist.ollamaModel ?? ""}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, ollamaModel: e.target.value } } : prev))
+                }
+              />
+            </div>
+          </>
+        )}
+
+        {settings.aiAssist.provider === "llamacpp" && (
+          <>
+            <div className="space-y-1.5">
+              <Label>Endpoint</Label>
+              <Input
+                placeholder="http://localhost:8080"
+                value={settings.aiAssist.llamacppEndpoint ?? ""}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, llamacppEndpoint: e.target.value } } : prev))
+                }
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Model</Label>
+              <Input
+                placeholder="default"
+                value={settings.aiAssist.llamacppModel ?? ""}
+                onChange={(e) =>
+                  setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, llamacppModel: e.target.value } } : prev))
+                }
+              />
+            </div>
+          </>
+        )}
+
+        <div className="space-y-1.5">
+          <Label>System prompt</Label>
+          <textarea
+            className="w-full h-24 rounded-md border border-input bg-background px-3 py-2 text-sm resize-none"
+            value={settings.aiAssist.systemPrompt ?? ""}
+            onChange={(e) =>
+              setSettings((prev) => (prev ? { ...prev, aiAssist: { ...prev.aiAssist, systemPrompt: e.target.value } } : prev))
+            }
+          />
+        </div>
+      </Card>
+
       {/* ─── Save button ─────────────────────────────────────────────────── */}
-      <Button onClick={handleSave} disabled={saving} size="sm">
+      <Button onClick={handleSave} disabled={saving}>
         {saving ? "Saving…" : "Save Settings"}
       </Button>
 
@@ -378,7 +765,7 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
                   </span>
                 </div>
                 <Tooltip>
-                  <TooltipTrigger asChild>
+                  <TooltipTrigger>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -399,4 +786,4 @@ const Settings: React.FC<SettingsProps> = ({ addToast }) => {
   );
 };
 
-export default Settings;
+export default React.memo(Settings);

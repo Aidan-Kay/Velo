@@ -55,6 +55,10 @@ export interface LocalItem {
   model?: string | null;
   domesticShipmentPrice?: number | null;
   internationalShipmentPrice?: number | null;
+  /** Auto-accept offer % threshold for this item. null = use global setting. */
+  autoAcceptOfferPercent: number | null;
+  /** User-defined tags for organisation and filtering. */
+  tags: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -104,6 +108,8 @@ export interface Order {
   stockReplenished?: boolean;
   /** Whether stock was already reduced for this order (shipped-based reduction). */
   stockReduced?: boolean;
+  /** Whether the seller has manually marked this order as packed. */
+  packed?: boolean;
   /** Whether the buyer profile link has been resolved. */
   buyerProfileUrl?: string | null;
 }
@@ -188,6 +194,7 @@ export interface JourneySummaryResult {
 export interface TransactionDetail {
   id: number;
   buyer?: { id?: number; login?: string; photo?: { url?: string } };
+  seller?: { id?: number; login?: string; photo?: { url?: string } };
   item?: { id?: number; title?: string; photos?: Array<{ thumbnails?: Array<{ type: string; url: string }> }> };
   shipment?: {
     id?: number;
@@ -228,6 +235,38 @@ export interface LabelPrinterSettings {
 
 export type LabelTypePreference = "printable" | "digital";
 
+export interface PollingIntervalSettings {
+  ordersMinutes: number;
+  listingsMinutes: number;
+  purchasesMinutes: number;
+  offersMinutes: number;
+}
+
+export interface RelistScheduledStartSettings {
+  enabled: boolean;
+  /** "HH:MM" 24h local time, e.g. "19:00". null when not set. */
+  time: string | null;
+}
+
+export interface PriceRulePreset {
+  id: string;
+  percentOff: number;
+  olderThanDays: number;
+}
+
+export type AiAssistProvider = "openai" | "ollama" | "llamacpp";
+
+export interface AiAssistSettings {
+  provider: AiAssistProvider;
+  openaiApiKey?: string;
+  openaiModel?: string;
+  ollamaEndpoint?: string;
+  ollamaModel?: string;
+  llamacppEndpoint?: string;
+  llamacppModel?: string;
+  systemPrompt?: string;
+}
+
 export interface AppSettings {
   site: string;
   minimizeToTray: boolean;
@@ -235,12 +274,73 @@ export interface AppSettings {
   relisting: RelistingSettings;
   bulkRepost: BulkRepostSettings;
   labelPrinter?: LabelPrinterSettings;
+  pollingIntervals: PollingIntervalSettings;
   /** Whether to automatically reduce item stock when an order reaches the "shipped" stage. */
   reduceStockOnShipped: boolean;
   /** Whether to automatically generate shipping labels when new orders are found. */
   autoGenerateLabels: boolean;
   /** Preferred label type when generating shipping labels ("printable" or "digital"). */
   preferredLabelType: LabelTypePreference;
+  /** Global auto-accept offer threshold (percentage). null = disabled. */
+  autoAcceptOfferPercent: number | null;
+  /** Global auto-ignore offer threshold (percentage). Offers below this percentage of the original price are auto-ignored locally. null = disabled. */
+  autoIgnoreOfferPercent: number | null;
+  /** Whether to show Windows native notifications for new orders and offers. */
+  enableNativeNotifications: boolean;
+  /** Optional gate that defers the next due relist until a wall-clock time today (HH:MM, local). */
+  relistScheduledStart: RelistScheduledStartSettings;
+  /** User-managed bulk price rule presets. */
+  priceRulePresets: PriceRulePreset[];
+  /** AI assist provider configuration for title/description generation. */
+  aiAssist: AiAssistSettings;
+}
+
+// ─── Logs ─────────────────────────────────────────────────────────────────────
+
+export type LogLevel = "error" | "warn" | "info" | "debug" | "verbose" | "silly";
+
+export interface LogEntry {
+  ts: string;
+  level: LogLevel;
+  source: string;
+  message: string;
+  raw: string;
+}
+
+export interface LogQuery {
+  levels?: LogLevel[];
+  search?: string;
+  limit?: number;
+  offsetFromEnd?: number;
+}
+
+// ─── Bulk Price Rule ──────────────────────────────────────────────────────────
+
+export interface BulkPriceRuleInput {
+  percentOff: number;
+  olderThanDays: number;
+  dryRun?: boolean;
+}
+
+export interface BulkPriceRuleResult {
+  matched: number;
+  updated: number;
+  failed: Array<{ listingId: number; error: string }>;
+}
+
+export interface BulkPriceProgress {
+  index: number;
+  total: number;
+  listingId: number;
+  ok: boolean;
+  error?: string;
+}
+
+// ─── AI Assist ────────────────────────────────────────────────────────────────
+
+export interface AiListingDraft {
+  title: string;
+  description: string;
 }
 
 // ─── Shipment Status Codes ────────────────────────────────────────────────────
@@ -251,6 +351,117 @@ export const SHIPMENT_STATUS = {
   IN_TRANSIT: 300,
   DELIVERED: 400,
 } as const;
+
+// ─── Order Delta (for efficient IPC) ──────────────────────────────────────────
+
+export interface OrderDelta {
+  upserted: Order[];
+  removedIds: number[];
+}
+
+// ─── Listing Delta (for efficient IPC) ────────────────────────────────────────
+
+export interface ListingDelta {
+  upserted: VintedListing[];
+  removedIds: number[];
+}
+
+// ─── Purchase (buyer perspective) ─────────────────────────────────────────────
+
+export interface Purchase {
+  id: number;
+  transactionId: number | null;
+  conversationId: number | null;
+  conversationUrl: string | null;
+  itemTitle: string;
+  itemThumbnail: string | null;
+  price: string | null;
+  priceNumeric: number | null;
+  currency: string;
+  sellerId: number | null;
+  sellerUsername: string;
+  sellerAvatar: string | null;
+  sellerProfileUrl: string | null;
+  courier: string;
+  trackingNumber: string | null;
+  trackingUrl: string | null;
+  shipmentId: number | null;
+  shipmentStatus: number | null;
+  carrierLogoUrl: string | null;
+  estimatedDelivery: string | null;
+  status: OrderStatus;
+  orderStatus: OrderStage;
+  statusLabel: string;
+  createdAt: string | null;
+  completedAt: string | null;
+  isBundle: boolean;
+  bundleItems: Array<{ title: string; thumbnail: string | null }>;
+}
+
+export interface PurchaseDelta {
+  upserted: Purchase[];
+  removedIds: number[];
+}
+
+// ─── Received Offer ───────────────────────────────────────────────────────────
+
+export type OfferStatus = "pending" | "accepted" | "cancelled" | "ignored" | "countered";
+
+export interface OfferPrice {
+  amount: string;
+  currencyCode: string;
+}
+
+export interface ReceivedOffer {
+  id: number;
+  transactionId: number;
+  conversationId: number;
+  offerRequestId: number;
+  itemId: number;
+  itemTitle: string;
+  itemThumbnail: string | null;
+  isBundle: boolean;
+  bundleItemIds: number[];
+  bundleItems: Array<{ title: string; thumbnail: string | null }>;
+  conversationUrl: string | null;
+  buyerId: number;
+  buyerUsername: string;
+  buyerAvatar: string | null;
+  buyerProfileUrl: string | null;
+  originalPrice: OfferPrice;
+  originalPriceLabel: string;
+  offerPrice: OfferPrice;
+  offerPriceLabel: string;
+  status: OfferStatus;
+  statusTitle: string;
+  current: boolean;
+  offeredAt: string;
+  autoAccepted?: boolean;
+}
+
+export interface OfferDelta {
+  upserted: ReceivedOffer[];
+  removedIds: number[];
+}
+
+export interface SellerOfferOptions {
+  minPrice: number | null;
+  maxPrice: number | null;
+  currency: string;
+}
+
+// ─── App Notification ─────────────────────────────────────────────────────────
+
+export interface AppNotification {
+  id: string;
+  type: "new_order" | "new_offer";
+  title: string;
+  message: string;
+  timestamp: string;
+  read: boolean;
+  referenceId: number;
+  navigateTo: "orders" | "offers";
+}
 
 // ─── Relist Queue Entry ───────────────────────────────────────────────────────
 
@@ -321,6 +532,21 @@ export interface ElectronAPI {
   getShippingLabelUrl: (shipmentId: number) => Promise<{ label_url: string }>;
   getJourneySummary: (transactionId: number) => Promise<JourneySummaryResult>;
   replenishOrderStock: (transactionId: number) => Promise<{ success: boolean }>;
+  setOrderPacked: (transactionId: number, packed: boolean) => Promise<{ success: boolean }>;
+
+  // Purchases (cached)
+  getMyPurchases: () => Promise<{ purchases: Purchase[]; pagination: Pagination }>;
+  refreshMyPurchases: () => Promise<{ purchases: Purchase[]; pagination: Pagination }>;
+  refreshSinglePurchase: (transactionId: number) => Promise<Purchase | null>;
+
+  // Offers (cached)
+  getReceivedOffers: () => Promise<{ offers: ReceivedOffer[] }>;
+  refreshReceivedOffers: () => Promise<{ offers: ReceivedOffer[]; latestTimestamp: string | null }>;
+  acceptOffer: (transactionId: number, offerRequestId: number) => Promise<{ success: boolean }>;
+  counterOffer: (transactionId: number, price: number, currency: string) => Promise<{ success: boolean }>;
+  getSellerOfferOptions: (transactionId: number) => Promise<SellerOfferOptions>;
+  ignoreOffer: (offerRequestId: number) => Promise<{ success: boolean }>;
+  unignoreOffer: (offerRequestId: number) => Promise<{ success: boolean }>;
 
   // Listing actions
   createListing: (itemData: Partial<LocalItem>, options?: { asDraft?: boolean }) => Promise<Record<string, unknown>>;
@@ -355,6 +581,12 @@ export interface ElectronAPI {
   queueForRelist: (itemId: string, soldAt: string) => Promise<{ success: boolean }>;
   removeFromRelistQueue: (itemId: string) => Promise<{ success: boolean }>;
 
+  // Notifications
+  getNotifications: () => Promise<AppNotification[]>;
+  markNotificationRead: (id: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
+  clearNotifications: () => Promise<void>;
+
   // Browser
   openExternal: (url: string) => Promise<void>;
 
@@ -362,9 +594,28 @@ export interface ElectronAPI {
   onSessionStatus: (callback: (status: SessionResult) => void) => () => void;
   onItemRelisted: (callback: (data: { itemId: string; item: LocalItem }) => void) => () => void;
   onListingsUpdated: (callback: (data: { items: VintedListing[]; pagination: Pagination }) => void) => () => void;
+  onListingsDelta: (callback: (delta: ListingDelta) => void) => () => void;
   onOrdersUpdated: (callback: (data: { orders: Order[]; pagination: Pagination }) => void) => () => void;
+  onOrdersDelta: (callback: (delta: OrderDelta) => void) => () => void;
+  onPurchasesDelta: (callback: (delta: PurchaseDelta) => void) => () => void;
+  onOffersDelta: (callback: (delta: OfferDelta) => void) => () => void;
+  onOfferAutoAccepted: (callback: (offer: ReceivedOffer) => void) => () => void;
   onListingCreationProgress: (callback: (data: { step: string; current: number; total: number }) => void) => () => void;
   onLabelGenerationProgress: (callback: (data: { transactionId: number; step: string }) => void) => () => void;
+  onNotificationsUpdated: (callback: (notifications: AppNotification[]) => void) => () => void;
+  onNotificationNavigate: (callback: (page: string, referenceId: number) => void) => () => void;
+
+  // Activity log
+  getLogEntries: (query?: LogQuery) => Promise<LogEntry[]>;
+  openLogFile: () => Promise<{ success: boolean }>;
+  clearLogFile: () => Promise<{ success: boolean }>;
+
+  // Bulk price rule
+  applyBulkPriceRule: (input: BulkPriceRuleInput) => Promise<BulkPriceRuleResult>;
+  onBulkPriceProgress: (callback: (progress: BulkPriceProgress) => void) => () => void;
+
+  // AI assist
+  aiGenerateListingDraft: (itemId: string) => Promise<AiListingDraft>;
 }
 
 declare global {

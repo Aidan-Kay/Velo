@@ -1,8 +1,8 @@
 import { ChevronDownIcon, MagnifyingGlassIcon } from "@heroicons/react/20/solid";
-import React from "react";
-import { Button } from "./ui/button";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "./ui/dropdown-menu";
-import { Input } from "./ui/input";
+import { Button } from "@shared/components/ui/button";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@shared/components/ui/dropdown-menu";
+import { Input } from "@shared/components/ui/input";
+import React, { useEffect, useRef } from "react";
 
 export interface FilterOption {
   value: string;
@@ -53,10 +53,29 @@ const FilterBar: React.FC<FilterBarProps> = ({
       ? (statusOptions?.find((o) => o.value === statusValue![0])?.label ?? statusValue![0])
       : `${statusValue!.length} selected`;
 
+  // Focus the search input when the active page dispatches "app:focus-search".
+  // All pages stay mounted, so guard against firing in a hidden page by checking
+  // for an ancestor with class "page-hidden".
+  const searchContainerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const handler = (): void => {
+      const container = searchContainerRef.current;
+      if (!container) return;
+      if (container.closest(".page-hidden")) return;
+      const input = container.querySelector("input");
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    };
+    window.addEventListener("app:focus-search", handler);
+    return () => window.removeEventListener("app:focus-search", handler);
+  }, []);
+
   return (
     <div className="flex items-center gap-3">
       {/* Search */}
-      <div className="relative flex-1 min-w-[180px]">
+      <div ref={searchContainerRef} className="relative flex-1 min-w-[180px]">
         <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
         <Input type="text" value={search} onChange={(e) => onSearchChange(e.target.value)} placeholder="Search…" className="pl-9" />
       </div>
@@ -64,7 +83,7 @@ const FilterBar: React.FC<FilterBarProps> = ({
       {/* Status filter (multi-select via dropdown menu with checkboxes) */}
       {statusOptions && onStatusChange && (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
+          <DropdownMenuTrigger>
             <Button variant="outline" className="w-44 justify-between">
               <span className="truncate">{displayLabel}</span>
               <ChevronDownIcon className="h-4 w-4 shrink-0 text-muted-foreground" />

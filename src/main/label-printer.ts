@@ -1,9 +1,10 @@
+import { execFile } from "child_process";
 import { net, session } from "electron";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
-import { degrees, PDFDocument } from "pdf-lib";
 import { getPrinters as fetchPrinters, print } from "pdf-to-printer";
+import { Worker } from "worker_threads";
 import type { PrinterInfo } from "../shared/types";
 
 const SESSION_PARTITION = "persist:vinted";
@@ -62,42 +63,40 @@ function normaliseCourier(courier: string): string {
   return lower.replace(/[^a-z0-9]/g, "_");
 }
 
-// ─── PDF Cropping ─────────────────────────────────────────────────────────────
+// ─── PDF Cropping (Worker Thread) ─────────────────────────────────────────────
 
 /**
- * Crop a shipping label PDF using courier-specific coordinates.
- * Falls back to top-half crop for unknown couriers.
+ * Crop a shipping label PDF in a worker thread to avoid blocking the main
+ * process event loop. Falls back to top-half crop for unknown couriers.
  */
 async function cropLabelPdf(pdfBytes: Buffer, courier: string): Promise<Uint8Array> {
-  const pdfDoc = await PDFDocument.load(pdfBytes);
-  const pages = pdfDoc.getPages();
   const courierKey = normaliseCourier(courier);
-  const crop = COURIER_CROPS[courierKey];
+  const crop = COURIER_CROPS[courierKey] ?? null;
 
-  for (const page of pages) {
-    if (crop) {
-      page.setMediaBox(crop.x, crop.y, crop.width, crop.height);
-      page.setCropBox(crop.x, crop.y, crop.width, crop.height);
-      if (crop.rotation) {
-        page.setRotation(degrees(crop.rotation));
+  const workerPath = path.join(__dirname, "label-worker.js");
+  const buffer = pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength);
+
+  return new Promise<Uint8Array>((resolve, reject) => {
+    const worker = new Worker(workerPath, {
+      workerData: { pdfBuffer: buffer, crop },
+      transferList: [buffer as ArrayBuffer],
+    });
+
+    worker.on("message", (result: Uint8Array | { error: string }) => {
+      if (result && typeof result === "object" && "error" in result) {
+        reject(new Error(result.error));
+      } else {
+        resolve(new Uint8Array(result as unknown as ArrayBuffer));
       }
-    } else {
-      // Fallback: crop to top half of A4 page
-      const { width, height } = page.getSize();
-      page.setMediaBox(0, height / 2, width, height / 2);
-      page.setCropBox(0, height / 2, width, height / 2);
-    }
-  }
+      worker.terminate();
+    });
 
-  return pdfDoc.save();
+    worker.on("error", (err) => {
+      reject(err);
+      worker.terminate();
+    });
+  });
 }
-
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-/**
- * Download, crop, and open a shipping label in an in-app browser window.
- * Automatically triggers the print dialog once the PDF has loaded.
- */
 
 // ─── Printer Discovery ────────────────────────────────────────────────────────
 
@@ -111,11 +110,37 @@ export async function listPrinters(): Promise<PrinterInfo[]> {
   }));
 }
 
-/** Return paper sizes supported by a specific printer. */
+/**
+ * Return paper sizes supported by a specific printer using .NET PrinterSettings
+ * (Win32_Printer.PrinterPaperNames used by pdf-to-printer returns incomplete results).
+ */
 export async function getPaperSizesForPrinter(printerName: string): Promise<string[]> {
-  const printers = await fetchPrinters();
-  const printer = printers.find((p) => p.name === printerName);
-  return printer?.paperSizes ?? [];
+  const psScript = `
+Add-Type -AssemblyName System.Drawing
+$ps = New-Object System.Drawing.Printing.PrinterSettings
+$ps.PrinterName = '${printerName.replace(/'/g, "''")}'
+if ($ps.IsValid) { $ps.PaperSizes | ForEach-Object { $_.PaperName } }
+`.trim();
+
+  return new Promise<string[]>((resolve) => {
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", psScript], { timeout: 10000 }, (err, stdout) => {
+      if (err) {
+        console.warn("[label-printer] Failed to get paper sizes via .NET, falling back to pdf-to-printer:", err.message);
+        fetchPrinters()
+          .then((printers) => {
+            const printer = printers.find((p) => p.name === printerName);
+            resolve(printer?.paperSizes ?? []);
+          })
+          .catch(() => resolve([]));
+        return;
+      }
+      const sizes = stdout
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      resolve(sizes);
+    });
+  });
 }
 
 // ─── Print ────────────────────────────────────────────────────────────────────
