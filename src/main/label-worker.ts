@@ -18,18 +18,13 @@ async function cropPdf(input: WorkerInput): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(new Uint8Array(input.pdfBuffer));
   const pages = pdfDoc.getPages();
 
-  for (const page of pages) {
-    if (input.crop) {
+  if (input.crop) {
+    for (const page of pages) {
       page.setMediaBox(input.crop.x, input.crop.y, input.crop.width, input.crop.height);
       page.setCropBox(input.crop.x, input.crop.y, input.crop.width, input.crop.height);
       if (input.crop.rotation) {
         page.setRotation(degrees(input.crop.rotation));
       }
-    } else {
-      // Fallback: crop to top half of A4 page
-      const { width, height } = page.getSize();
-      page.setMediaBox(0, height / 2, width, height / 2);
-      page.setCropBox(0, height / 2, width, height / 2);
     }
   }
 
