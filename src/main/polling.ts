@@ -1,4 +1,5 @@
-import type { AppSettings, Order, Pagination, Purchase, ReceivedOffer, VintedListing } from "../shared/types";
+import { titleKey } from "../shared/lib/match";
+import type { AppSettings, LocalItem, OfferAutomationRule, Order, Pagination, Purchase, ReceivedOffer, VintedListing } from "../shared/types";
 import { enrichOrder, enrichPurchase, pickEnrichmentFields, pickPurchaseEnrichmentFields } from "./order-enrichment";
 import * as vintedApi from "./vinted/api";
 import type { GetReceivedOffersResult } from "./vinted/offers";
@@ -99,6 +100,7 @@ class PolledResource<TResult> {
 export interface PollingCallbacks {
   getDomain: () => string;
   getSettings: () => AppSettings;
+  getItems: () => LocalItem[];
   getCachedOrders: () => Order[];
   getCachedListings: () => VintedListing[];
   getCachedPurchases: () => Purchase[];
@@ -202,6 +204,65 @@ export class PollingManager {
 
   private clearTimers(): void {
     for (const r of this.all) r.clearTimer();
+  }
+
+  private getOfferTitles(offer: ReceivedOffer): string[] {
+    if (offer.isBundle && offer.bundleItems.length > 0) {
+      return offer.bundleItems.map((item) => item.title);
+    }
+    return [offer.itemTitle];
+  }
+
+  private findAutomationRuleMatch(
+    offer: ReceivedOffer,
+    rules: OfferAutomationRule[],
+    items: LocalItem[],
+  ): OfferAutomationRule | null {
+    const offerAmount = parseFloat(offer.offerPrice.amount);
+    if (!Number.isFinite(offerAmount)) return null;
+
+    const itemsByTitle = new Map<string, LocalItem[]>();
+    for (const item of items) {
+      const key = titleKey(item.title);
+      const existing = itemsByTitle.get(key);
+      if (existing) existing.push(item);
+      else itemsByTitle.set(key, [item]);
+    }
+
+    const offerTitles = this.getOfferTitles(offer);
+
+    for (const rule of rules) {
+      if (offerTitles.length !== rule.itemCount) continue;
+      if (offerAmount < rule.minimumOfferAmount) continue;
+
+      const normalizedRuleTag = rule.tag.trim().toLowerCase();
+      const requiredCountsByTitle = new Map<string, number>();
+      for (const title of offerTitles) {
+        const key = titleKey(title);
+        requiredCountsByTitle.set(key, (requiredCountsByTitle.get(key) || 0) + 1);
+      }
+
+      let matchesRule = true;
+      for (const [title, requiredCount] of requiredCountsByTitle) {
+        const matchedItems = itemsByTitle.get(title);
+        if (!matchedItems || matchedItems.length === 0) {
+          matchesRule = false;
+          break;
+        }
+
+        const taggedMatchCount = matchedItems.filter((item) =>
+          item.tags.some((tag) => tag.trim().toLowerCase() === normalizedRuleTag),
+        ).length;
+        if (taggedMatchCount < requiredCount) {
+          matchesRule = false;
+          break;
+        }
+      }
+
+      if (matchesRule) return rule;
+    }
+
+    return null;
   }
 
   // ─── Public refresh API (user-triggered) ────────────────────────────────
@@ -450,8 +511,26 @@ export class PollingManager {
 
       // Auto-accept logic for newly found pending offers
       const settings = this.callbacks.getSettings();
+      const items = this.callbacks.getItems();
       for (const offer of result.offers) {
         if (offer.status !== "pending") continue;
+
+        const matchedRule = this.findAutomationRuleMatch(offer, settings.offerAutomationRules, items);
+        if (matchedRule) {
+          try {
+            await vintedApi.acceptOffer(offer.transactionId, offer.offerRequestId, domain);
+            offer.status = "accepted";
+            offer.autoAccepted = true;
+            console.log(
+              `[polling] Auto-accepted offer ${offer.offerRequestId} via rule ${matchedRule.id} (tag=${matchedRule.tag}, itemCount=${matchedRule.itemCount}, minimum=${matchedRule.minimumOfferAmount})`,
+            );
+            this.callbacks.onOfferAutoAccepted(offer);
+          } catch (err) {
+            console.warn(`[polling] Failed to auto-accept offer ${offer.offerRequestId} via automation rule:`, (err as Error).message);
+          }
+          continue;
+        }
+
         const threshold = settings.autoAcceptOfferPercent;
         if (threshold == null) continue;
 

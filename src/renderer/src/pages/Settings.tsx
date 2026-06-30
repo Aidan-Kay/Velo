@@ -175,7 +175,7 @@ const Settings: React.FC = () => {
           <h3 className="text-base font-medium text-foreground">Vinted Site</h3>
           <p className="text-xs text-muted-foreground mt-0.5">Select which Vinted marketplace to use</p>
         </div>
-        <Select value={settings.site} onValueChange={(value) => updateSetting("site", value)}>
+        <Select value={settings.site} onValueChange={(value) => updateSetting("site", value ?? settings.site)}>
           <SelectTrigger className="w-full">
             <SelectValue placeholder="Select site…" />
           </SelectTrigger>
@@ -379,7 +379,7 @@ const Settings: React.FC = () => {
           <Label>Printer</Label>
           <Select
             value={settings.labelPrinter?.printerName || "__default__"}
-            onValueChange={(value) => updateLabelPrinter("printerName", value === "__default__" ? "" : value)}
+            onValueChange={(value) => updateLabelPrinter("printerName", value === "__default__" ? "" : (value ?? ""))}
           >
             <SelectTrigger className="w-full">
               <SelectValue placeholder="System default" />
@@ -401,7 +401,7 @@ const Settings: React.FC = () => {
             <Label>Paper size</Label>
             <Select
               value={settings.labelPrinter?.paperSize || "__default__"}
-              onValueChange={(value) => updateLabelPrinter("paperSize", value === "__default__" ? "" : value)}
+              onValueChange={(value) => updateLabelPrinter("paperSize", value === "__default__" ? "" : (value ?? ""))}
             >
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Printer default" />

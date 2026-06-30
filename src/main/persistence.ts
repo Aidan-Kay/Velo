@@ -6,6 +6,7 @@ import type {
   AppNotification,
   AppSettings,
   LocalItem,
+  OfferAutomationRule,
   Order,
   Pagination,
   Purchase,
@@ -13,6 +14,7 @@ import type {
   RelistEntry,
   VintedListing,
 } from "../shared/types";
+import { isSite, normalizeSite } from "./shared/constants";
 
 export const userDataPath: string = app.getPath("userData");
 
@@ -113,6 +115,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoIgnoreOfferPercent: null,
   enableNativeNotifications: true,
   relistScheduledStart: { enabled: false, time: null },
+  offerAutomationRules: [],
   priceRulePresets: [
     { id: "preset-5-7", percentOff: 5, olderThanDays: 7 },
     { id: "preset-10-7", percentOff: 10, olderThanDays: 7 },
@@ -125,7 +128,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 
 /** Validate and normalise settings to guard against corrupted data on disk. */
 function validateSettings(s: AppSettings): AppSettings {
-  if (typeof s.site !== "string" || !s.site) s.site = DEFAULT_SETTINGS.site;
+  s.site = normalizeSite(s.site);
   if (typeof s.minimizeToTray !== "boolean") s.minimizeToTray = DEFAULT_SETTINGS.minimizeToTray;
   if (typeof s.darkMode !== "boolean") s.darkMode = DEFAULT_SETTINGS.darkMode;
 
@@ -202,6 +205,28 @@ function validateSettings(s: AppSettings): AppSettings {
     );
   }
 
+  // Offer automation rules
+  if (!Array.isArray(s.offerAutomationRules)) {
+    s.offerAutomationRules = [];
+  } else {
+    s.offerAutomationRules = s.offerAutomationRules
+      .filter(
+        (rule) =>
+          rule &&
+          typeof rule.id === "string" &&
+          typeof rule.tag === "string" &&
+          typeof rule.itemCount === "number" &&
+          typeof rule.minimumOfferAmount === "number",
+      )
+      .map((rule) => ({
+        id: rule.id,
+        tag: rule.tag.trim(),
+        itemCount: Math.trunc(rule.itemCount),
+        minimumOfferAmount: rule.minimumOfferAmount,
+      }))
+      .filter((rule) => rule.tag.length > 0 && rule.itemCount > 0 && rule.minimumOfferAmount >= 0);
+  }
+
   // AI assist
   if (!s.aiAssist || typeof s.aiAssist !== "object") {
     s.aiAssist = { ...DEFAULT_SETTINGS.aiAssist };
@@ -213,6 +238,77 @@ function validateSettings(s: AppSettings): AppSettings {
   return s;
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeOfferAutomationRules(value: unknown): OfferAutomationRule[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid offer automation rules");
+  }
+
+  return value.map((rule) => {
+    if (!isPlainObject(rule)) {
+      throw new Error("Invalid offer automation rule");
+    }
+
+    const { id, tag, itemCount, minimumOfferAmount } = rule;
+    if (
+      typeof id !== "string" ||
+      typeof tag !== "string" ||
+      typeof itemCount !== "number" ||
+      typeof minimumOfferAmount !== "number"
+    ) {
+      throw new Error("Invalid offer automation rule");
+    }
+
+    const sanitizedRule: OfferAutomationRule = {
+      id,
+      tag: tag.trim(),
+      itemCount: Math.trunc(itemCount),
+      minimumOfferAmount,
+    };
+
+    if (!sanitizedRule.tag || sanitizedRule.itemCount < 1 || sanitizedRule.minimumOfferAmount < 0) {
+      throw new Error("Invalid offer automation rule");
+    }
+
+    return sanitizedRule;
+  });
+}
+
+export function sanitizeSettingsInput(current: AppSettings, input: unknown): AppSettings {
+  if (!isPlainObject(input)) {
+    throw new Error("Invalid settings payload");
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "site") && !isSite(input.site)) {
+    throw new Error("Invalid Vinted site");
+  }
+
+  const relistingInput = isPlainObject(input.relisting) ? input.relisting : {};
+  const bulkRepostInput = isPlainObject(input.bulkRepost) ? input.bulkRepost : {};
+  const pollingIntervalsInput = isPlainObject(input.pollingIntervals) ? input.pollingIntervals : {};
+  const relistScheduledStartInput = isPlainObject(input.relistScheduledStart) ? input.relistScheduledStart : {};
+  const aiAssistInput = isPlainObject(input.aiAssist) ? input.aiAssist : {};
+
+  const merged: AppSettings = {
+    ...current,
+    ...input,
+    relisting: { ...current.relisting, ...relistingInput },
+    bulkRepost: { ...current.bulkRepost, ...bulkRepostInput },
+    pollingIntervals: { ...current.pollingIntervals, ...pollingIntervalsInput },
+    relistScheduledStart: { ...current.relistScheduledStart, ...relistScheduledStartInput },
+    offerAutomationRules: Object.prototype.hasOwnProperty.call(input, "offerAutomationRules")
+      ? sanitizeOfferAutomationRules(input.offerAutomationRules)
+      : current.offerAutomationRules,
+    priceRulePresets: Array.isArray(input.priceRulePresets) ? input.priceRulePresets : current.priceRulePresets,
+    aiAssist: { ...current.aiAssist, ...aiAssistInput },
+  };
+
+  return validateSettings(merged);
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   const saved = await readJsonAsync<Partial<AppSettings>>("settings.json", {});
   const merged: AppSettings = {
@@ -222,6 +318,7 @@ export async function loadSettings(): Promise<AppSettings> {
     bulkRepost: { ...DEFAULT_SETTINGS.bulkRepost, ...saved.bulkRepost },
     pollingIntervals: { ...DEFAULT_SETTINGS.pollingIntervals, ...saved.pollingIntervals },
     relistScheduledStart: { ...DEFAULT_SETTINGS.relistScheduledStart, ...saved.relistScheduledStart },
+    offerAutomationRules: saved.offerAutomationRules ?? DEFAULT_SETTINGS.offerAutomationRules,
     priceRulePresets: saved.priceRulePresets ?? DEFAULT_SETTINGS.priceRulePresets,
     aiAssist: { ...DEFAULT_SETTINGS.aiAssist, ...saved.aiAssist },
   };

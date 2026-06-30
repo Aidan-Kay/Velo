@@ -254,6 +254,13 @@ export interface PriceRulePreset {
   olderThanDays: number;
 }
 
+export interface OfferAutomationRule {
+  id: string;
+  tag: string;
+  itemCount: number;
+  minimumOfferAmount: number;
+}
+
 export type AiAssistProvider = "openai" | "ollama" | "llamacpp";
 
 export interface AiAssistSettings {
@@ -289,6 +296,8 @@ export interface AppSettings {
   enableNativeNotifications: boolean;
   /** Optional gate that defers the next due relist until a wall-clock time today (HH:MM, local). */
   relistScheduledStart: RelistScheduledStartSettings;
+  /** User-managed bundle offer auto-accept rules. */
+  offerAutomationRules: OfferAutomationRule[];
   /** User-managed bulk price rule presets. */
   priceRulePresets: PriceRulePreset[];
   /** AI assist provider configuration for title/description generation. */

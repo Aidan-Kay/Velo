@@ -1,15 +1,16 @@
 import { ipcMain } from "electron";
 
 import type { AppSettings } from "../../shared/types";
-import { saveSettings } from "../persistence";
+import { sanitizeSettingsInput, saveSettings } from "../persistence";
 import type { IpcDeps } from "./types";
 
 export function setupSettingsIpc({ state, getSettings, setSettings, relisting }: IpcDeps): void {
   ipcMain.handle("get-settings", () => getSettings());
 
   ipcMain.handle("save-settings", (_event, newSettings: AppSettings) => {
-    setSettings(newSettings);
-    saveSettings(newSettings);
+    const sanitizedSettings = sanitizeSettingsInput(getSettings(), newSettings);
+    setSettings(sanitizedSettings);
+    saveSettings(sanitizedSettings);
     return { success: true };
   });
 

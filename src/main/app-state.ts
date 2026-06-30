@@ -236,6 +236,7 @@ export function buildAppStateBundle(deps: BuildDeps): AppStateBundle {
     notifDeps,
     pollingCallbacks: {
       getSettings,
+      getItems: () => state.items,
       getCachedOrders: () => state.cachedOrders,
       getCachedListings: () => state.cachedListings,
       getCachedPurchases: () => state.cachedPurchases,

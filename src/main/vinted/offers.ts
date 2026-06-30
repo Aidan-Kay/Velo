@@ -1,7 +1,8 @@
-import type { OfferStatus, ReceivedOffer, SellerOfferOptions } from "../../shared/types";
+import type { OfferStatus, ReceivedOffer, SellerOfferOptions, TransactionDetail } from "../../shared/types";
 import { CURRENCY_SYMBOLS, DEFAULT_DOMAIN } from "../shared/constants";
 import { getClient } from "./lib/requester";
 import { getInbox } from "./messaging";
+import { getTransactionDetail } from "./orders";
 
 const VINTED_API = "/api/v2";
 
@@ -152,6 +153,7 @@ async function extractOffersFromConversation(conversationId: number, domain: str
   const txn = conv.transaction;
   const oppositeUser = conv.opposite_user;
   const offers: ReceivedOffer[] = [];
+  let transactionDetail: TransactionDetail | null = null;
 
   const itemThumbnail =
     txn?.item_photo?.thumbnails?.find((t) => t.type === "thumb310x430")?.url ||
@@ -169,6 +171,25 @@ async function extractOffersFromConversation(conversationId: number, domain: str
     const priceCurrency = entity.price?.currency_code || "GBP";
     const originalCurrency = entity.original_price?.currency_code || priceCurrency;
 
+    if (txn?.is_bundle && !transactionDetail && (entity.transaction_id || txn.id)) {
+      try {
+        transactionDetail = await getTransactionDetail(entity.transaction_id || txn.id!, domain);
+      } catch (err) {
+        console.warn(
+          `[offers] Failed to fetch transaction detail for bundle conversation ${conversationId}:`,
+          (err as Error).message,
+        );
+      }
+    }
+
+    const bundleItems =
+      txn?.is_bundle && Array.isArray(transactionDetail?.order?.items) && transactionDetail.order.items.length > 0
+        ? transactionDetail.order.items.map((item) => ({
+            title: item.title || "",
+            thumbnail: item.photos?.[0]?.thumbnails?.find((t) => t.type === "thumb150x210")?.url || null,
+          }))
+        : [];
+
     offers.push({
       id: entity.offer_request_id,
       transactionId: entity.transaction_id || txn?.id || 0,
@@ -179,7 +200,7 @@ async function extractOffersFromConversation(conversationId: number, domain: str
       itemThumbnail,
       isBundle: txn?.is_bundle || false,
       bundleItemIds: txn?.item_ids || [],
-      bundleItems: [],
+      bundleItems,
       conversationUrl: `https://${domain}/inbox/${conv.id}`,
       buyerId: oppositeUser?.id || entity.user_id || 0,
       buyerUsername: oppositeUser?.login || "—",
