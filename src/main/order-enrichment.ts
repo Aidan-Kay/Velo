@@ -47,7 +47,7 @@ function buildCommonEnrichment(
   const isBundle = Array.isArray(items) && items.length > 1;
 
   return {
-    courier: detail.shipment?.carrier_code || shippingCourier || fallback.courier,
+    courier: shippingCourier || detail.shipment?.carrier_code || fallback.courier,
     trackingNumber: journey?.trackingCode || detail.shipment?.tracking_code || fallback.trackingNumber,
     trackingUrl: journey?.trackingUrl || detail.shipment?.tracking_url || fallback.trackingUrl,
     shipmentId: detail.shipment?.id || fallback.shipmentId,
