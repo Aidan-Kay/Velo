@@ -18,7 +18,15 @@ export type Site = (typeof VINTED_SITES)[number];
 export const DEFAULT_SITE: Site = "co.uk";
 export const DEFAULT_DOMAIN = `www.vinted.${DEFAULT_SITE}`;
 
+export function isSite(value: unknown): value is Site {
+  return typeof value === "string" && VINTED_SITES.includes(value as Site);
+}
+
+export function normalizeSite(value: unknown): Site {
+  return isSite(value) ? value : DEFAULT_SITE;
+}
+
 /** Resolve the Vinted domain for a given site code (TLD-style, e.g. "co.uk", "fr"). */
 export function getDomain(site: Site | string): string {
-  return `www.vinted.${site}`;
+  return `www.vinted.${normalizeSite(site)}`;
 }
