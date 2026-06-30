@@ -3,6 +3,7 @@ import { Checkbox } from "@shared/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@shared/components/ui/dialog";
 import { Input } from "@shared/components/ui/input";
 import { Label } from "@shared/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@shared/components/ui/select";
 import { Switch } from "@shared/components/ui/switch";
 import React, { useState } from "react";
 
@@ -10,6 +11,7 @@ export interface BulkEditUpdates {
   price?: number;
   stock?: number;
   autoAcceptOfferPercent?: number | null;
+  packageSizeId?: number | null;
   tagsMode?: "add" | "remove" | "replace";
   tags?: string[];
 }
@@ -31,6 +33,8 @@ export const BulkEditItemsModal: React.FC<BulkEditItemsModalProps> = ({ selected
   const [updateTags, setUpdateTags] = useState(false);
   const [tagsMode, setTagsMode] = useState<"add" | "remove" | "replace">("add");
   const [tagsInput, setTagsInput] = useState("");
+  const [updatePackageSize, setUpdatePackageSize] = useState(false);
+  const [packageSize, setPackageSize] = useState("");
 
   const handleConfirm = () => {
     const updates: BulkEditUpdates = {};
@@ -55,10 +59,13 @@ export const BulkEditItemsModal: React.FC<BulkEditItemsModalProps> = ({ selected
       updates.tagsMode = tagsMode;
       updates.tags = parsed;
     }
+    if (updatePackageSize) {
+      updates.packageSizeId = packageSize !== "" ? Number(packageSize) : null;
+    }
     onConfirm(updates);
   };
 
-  const hasAnyField = updatePrice || updateStock || updateAutoAccept || updateTags;
+  const hasAnyField = updatePrice || updateStock || updateAutoAccept || updateTags || updatePackageSize;
 
   return (
     <Dialog
@@ -145,6 +152,29 @@ export const BulkEditItemsModal: React.FC<BulkEditItemsModalProps> = ({ selected
                   ))}
                 </div>
                 <Input placeholder="Comma-separated tags" value={tagsInput} onChange={(e) => setTagsInput(e.target.value)} />
+              </div>
+            )}
+          </div>
+
+          {/* Package size */}
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <Checkbox checked={updatePackageSize} onCheckedChange={(checked) => setUpdatePackageSize(checked === true)} />
+              <Label>Update package size</Label>
+            </div>
+            {updatePackageSize && (
+              <div className="pl-6">
+                <Select value={packageSize} onValueChange={(value) => setPackageSize(value ?? "")}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="Not selected" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Not selected</SelectItem>
+                    <SelectItem value="1">Small</SelectItem>
+                    <SelectItem value="2">Medium</SelectItem>
+                    <SelectItem value="3">Large</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             )}
           </div>

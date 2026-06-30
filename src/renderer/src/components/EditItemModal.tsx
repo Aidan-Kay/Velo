@@ -3,6 +3,7 @@ import { Button } from "@shared/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@shared/components/ui/dialog";
 import { Input } from "@shared/components/ui/input";
 import { Label } from "@shared/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@shared/components/ui/select";
 import { Switch } from "@shared/components/ui/switch";
 import { Textarea } from "@shared/components/ui/textarea";
 import React, { useEffect, useState } from "react";
@@ -187,6 +188,25 @@ const EditItemModal: React.FC<EditItemModalProps> = ({ open, onClose, editItem, 
               }
               placeholder="Comma-separated tags"
             />
+          </div>
+
+          {/* Package Size */}
+          <div className="space-y-3">
+            <Label>Package size</Label>
+            <Select
+              value={item.packageSizeId != null ? String(item.packageSizeId) : ""}
+              onValueChange={(val) => updateField("packageSizeId", val ? Number(val) : null)}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="Not selected" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Not selected</SelectItem>
+                <SelectItem value="1">Small</SelectItem>
+                <SelectItem value="2">Medium</SelectItem>
+                <SelectItem value="3">Large</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
         </div>
         <DialogFooter>

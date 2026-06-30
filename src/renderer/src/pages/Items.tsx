@@ -616,6 +616,7 @@ const Items: React.FC<ItemsProps> = ({ loggedIn }) => {
       if (updates.price !== undefined) patch.price = updates.price;
       if (updates.stock !== undefined) patch.stock = updates.stock;
       if (updates.autoAcceptOfferPercent !== undefined) patch.autoAcceptOfferPercent = updates.autoAcceptOfferPercent;
+      if (updates.packageSizeId !== undefined) patch.packageSizeId = updates.packageSizeId;
       if (updates.tagsMode && updates.tags) {
         const existing = item.tags ?? [];
         const incoming = updates.tags;
