@@ -106,7 +106,7 @@ export interface Order {
   bundleItems: Array<{ title: string; thumbnail: string | null }>;
   /** Whether stock was replenished after this order was cancelled. */
   stockReplenished?: boolean;
-  /** Whether stock was already reduced for this order (shipped-based reduction). */
+  /** Whether stock was already reduced for this order. */
   stockReduced?: boolean;
   /** Whether the seller has manually marked this order as packed. */
   packed?: boolean;
@@ -275,8 +275,8 @@ export interface AppSettings {
   bulkRepost: BulkRepostSettings;
   labelPrinter?: LabelPrinterSettings;
   pollingIntervals: PollingIntervalSettings;
-  /** Whether to automatically reduce item stock when an order reaches the "shipped" stage. */
-  reduceStockOnShipped: boolean;
+  /** Whether to automatically reduce item stock when an order is placed. */
+  reduceStockOnOrdered: boolean;
   /** Whether to automatically generate shipping labels when new orders are found. */
   autoGenerateLabels: boolean;
   /** Preferred label type when generating shipping labels ("printable" or "digital"). */

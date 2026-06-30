@@ -289,12 +289,10 @@ const Settings: React.FC = () => {
 
         <div className="flex items-center justify-between">
           <div>
-            <span className="text-sm text-foreground">Reduce stock on shipped</span>
-            <p className="text-xs text-muted-foreground">
-              Automatically decrease an item's stock by 1 when an order reaches the "shipped" stage
-            </p>
+            <span className="text-sm text-foreground">Reduce stock on order placed</span>
+            <p className="text-xs text-muted-foreground">Automatically decrease an item's stock by 1 when a new order is placed</p>
           </div>
-          <Switch checked={settings.reduceStockOnShipped} onCheckedChange={(checked) => updateSetting("reduceStockOnShipped", checked)} />
+          <Switch checked={settings.reduceStockOnOrdered} onCheckedChange={(checked) => updateSetting("reduceStockOnOrdered", checked)} />
         </div>
       </Card>
 

@@ -15,7 +15,7 @@ import type {
   VintedListing,
 } from "../shared/types";
 import * as notificationManager from "./notifications";
-import { autoGenerateLabelsForNewOrders, reduceStockForShippedOrders } from "./order-automation";
+import { autoGenerateLabelsForNewOrders, reduceStockForNewOrders } from "./order-automation";
 import { saveCachedListings, saveCachedOffers, saveCachedOrders, saveCachedPurchases, saveNotifications } from "./persistence";
 import type { PollingCallbacks } from "./polling";
 import { computeDelta } from "./shared/delta";
@@ -112,8 +112,8 @@ export function buildAppStateBundle(deps: BuildDeps): AppStateBundle {
   const onOrdersUpdated = (orders: Order[], pagination: Pagination): void => {
     const settings = getSettings();
 
-    // Reduce stock for orders that have just reached the "shipped" stage
-    reduceStockForShippedOrders(orders, state.cachedOrders, settings, state.items);
+    // Reduce stock for orders that have just been placed
+    reduceStockForNewOrders(orders, state.cachedOrders, settings, state.items);
 
     // Auto-generate shipping labels for new orders (runs async, doesn't block)
     const cachedSnapshot = [...state.cachedOrders];

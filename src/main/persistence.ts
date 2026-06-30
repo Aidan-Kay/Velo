@@ -106,7 +106,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     purchasesMinutes: 15,
     offersMinutes: 15,
   },
-  reduceStockOnShipped: true,
+  reduceStockOnOrdered: true,
   autoGenerateLabels: false,
   preferredLabelType: "printable",
   autoAcceptOfferPercent: null,
@@ -142,8 +142,13 @@ function validateSettings(s: AppSettings): AppSettings {
     s.bulkRepost.maxIntervalSeconds = DEFAULT_SETTINGS.bulkRepost.maxIntervalSeconds;
   if (s.bulkRepost.maxIntervalSeconds < s.bulkRepost.minIntervalSeconds) s.bulkRepost.maxIntervalSeconds = s.bulkRepost.minIntervalSeconds;
 
-  // Reduce stock on shipped
-  if (typeof s.reduceStockOnShipped !== "boolean") s.reduceStockOnShipped = DEFAULT_SETTINGS.reduceStockOnShipped;
+  // Migrate old reduceStockOnShipped → reduceStockOnOrdered
+  const legacySettings = s as unknown as { reduceStockOnShipped?: boolean };
+  if (typeof s.reduceStockOnOrdered !== "boolean") {
+    s.reduceStockOnOrdered = typeof legacySettings.reduceStockOnShipped === "boolean"
+      ? legacySettings.reduceStockOnShipped
+      : DEFAULT_SETTINGS.reduceStockOnOrdered;
+  }
 
   // Auto-generate labels
   if (typeof s.autoGenerateLabels !== "boolean") s.autoGenerateLabels = DEFAULT_SETTINGS.autoGenerateLabels;

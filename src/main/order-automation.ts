@@ -4,9 +4,9 @@ import { saveItems } from "./persistence";
 import { getDomain } from "./shared/constants";
 import * as vintedApi from "./vinted/api";
 
-/** Reduce stock for local items matching orders that have reached the "shipped" stage. */
-export function reduceStockForShippedOrders(orders: Order[], cachedOrders: Order[], settings: AppSettings, items: LocalItem[]): boolean {
-  if (!settings.reduceStockOnShipped) return false;
+/** Reduce stock for local items matching orders that have just been placed (first seen). */
+export function reduceStockForNewOrders(orders: Order[], cachedOrders: Order[], settings: AppSettings, items: LocalItem[]): boolean {
+  if (!settings.reduceStockOnOrdered) return false;
 
   const cachedMap = new Map<number, Order>();
   for (const cached of cachedOrders) {
@@ -15,15 +15,15 @@ export function reduceStockForShippedOrders(orders: Order[], cachedOrders: Order
 
   let changed = false;
   for (const order of orders) {
-    if (order.orderStatus !== "shipped") continue;
     if (order.stockReduced) continue;
+    if (order.orderStatus === "cancelled") continue;
 
     const cached = order.transactionId ? cachedMap.get(order.transactionId) : null;
     if (cached?.stockReduced) {
       order.stockReduced = true;
       continue;
     }
-    if (cached && cached.orderStatus === "shipped") continue;
+    if (cached) continue;
 
     const titlesToReduce: string[] = [];
     if (order.isBundle && order.bundleItems.length > 0) {
@@ -38,7 +38,7 @@ export function reduceStockForShippedOrders(orders: Order[], cachedOrders: Order
       if (item && item.stock > 0) {
         item.stock -= 1;
         changed = true;
-        console.log(`[stock] Reduced stock for "${item.title}" to ${item.stock} (order ${order.transactionId} shipped)`);
+        console.log(`[stock] Reduced stock for "${item.title}" to ${item.stock} (order ${order.transactionId} placed)`);
       }
     }
 
