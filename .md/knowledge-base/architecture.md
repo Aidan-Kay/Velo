@@ -3,44 +3,44 @@
 ## Process Model
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  Main Process (src/main/main.ts → dist/main.js)              │
-│                                                              │
-│  ┌───────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │ BrowserWindow │  │ Hidden       │  │ Tray         │       │
-│  │ (UI)          │  │ BrowserWindow│  │              │       │
-│  │               │  │ (Vinted API) │  │              │       │
-│  └──────┬────────┘  └──────────────┘  └──────────────┘       │
-│         │ preload                                            │
-│  ┌──────┴──────────┐                                         │
-│  │ Preload         │                                         │
-│  │ (contextBridge) │                                         │
-│  └──────┬──────────┘                                         │
-│         │ IPC                                                │
-│  ┌──────┴─────────────────────────────────────────────┐      │
-│  │ ipc-handlers.ts  — thin orchestrator               │      │
-│  │ ipc/auth, listings, orders, purchases, offers,     │      │
-│  │      items, catalog, settings, notifications,      │      │
-│  │      system — domain-grouped ipcMain.handle setup  │      │
-│  ├────────────────────────────────────────────────────┤      │
-│  │ app-state.ts      — shared mutable state, delta    │      │
-│  │                     computation, persistence side  │      │
-│  │                     effects, renderer push events  │      │
-│  ├────────────────────────────────────────────────────┤      │
-│  │ vinted/api.ts     — barrel re-export of sub-modules│      │
-│  │ vinted/auth.ts    — authentication functions       │      │
-│  │ vinted/listings.ts — listing CRUD, photo upload    │      │
-│  │ vinted/orders.ts  — order/transaction fetching     │      │
-│  │ vinted/messaging.ts — inbox API                    │      │
+┌───────────────────────────────────────────────────────────────┐
+│  Main Process (src/main/main.ts → dist/main.js)               │
+│                                                               │
+│  ┌───────────────┐  ┌──────────────┐  ┌──────────────┐        │
+│  │ BrowserWindow │  │ Hidden       │  │ Tray         │        │
+│  │ (UI)          │  │ BrowserWindow│  │              │        │
+│  │               │  │ (Vinted API) │  │              │        │
+│  └──────┬────────┘  └──────────────┘  └──────────────┘        │
+│         │ preload                                             │
+│  ┌──────┴──────────┐                                          │
+│  │ Preload         │                                          │
+│  │ (contextBridge) │                                          │
+│  └──────┬──────────┘                                          │
+│         │ IPC                                                 │
+│  ┌──────┴──────────────────────────────────────────────┐      │
+│  │ ipc-handlers.ts  — thin orchestrator                │      │
+│  │ ipc/auth, listings, orders, purchases, offers,      │      │
+│  │      items, catalog, settings, notifications,       │      │
+│  │      system — domain-grouped ipcMain.handle setup   │      │
+│  ├─────────────────────────────────────────────────────┤      │
+│  │ app-state.ts      — shared mutable state, delta     │      │
+│  │                     computation, persistence side   │      │
+│  │                     effects, renderer push events   │      │
+│  ├─────────────────────────────────────────────────────┤      │
+│  │ vinted/api.ts     — barrel re-export of sub-modules │      │
+│  │ vinted/auth.ts    — authentication functions        │      │
+│  │ vinted/listings.ts — listing CRUD, photo upload     │      │
+│  │ vinted/orders.ts  — order/transaction fetching      │      │
+│  │ vinted/messaging.ts — inbox API                     │      │
 │  │ vinted/offers.ts  — offer detection, accept, counter│      │
-│  │ vinted/shipping.ts — label ordering & tracking     │      │
-│  │ vinted/catalog.ts — categories, conditions, sizes  │      │
-│  │ vinted/mappers.ts — raw API → domain type mappers  │      │
-│  │ vinted/lib/requester.ts — VintedClient class       │      │
-│  │ persistence.ts    — file I/O for settings/items    │      │
-│  │ relisting.ts      — RelistingManager class               │      ││  │ order-enrichment.ts — shared order enrichment logic│      │
-│  │ order-automation.ts — stock reduction & auto-labels│      ││  └────────────────────────────────────────────────────┘      │
-└──────────────────────────────────────────────────────────────┘
+│  │ vinted/shipping.ts — label ordering & tracking      │      │
+│  │ vinted/catalog.ts — categories, conditions, sizes   │      │
+│  │ vinted/mappers.ts — raw API → domain type mappers   │      │
+│  │ vinted/lib/requester.ts — VintedClient class        │      │
+│  │ persistence.ts    — file I/O for settings/items     │      │
+│  │ relisting.ts      — RelistingManager class          │      │
+│  │ order-enrichment.ts — shared order enrichment logic │      │
+└───────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────┐
 │  Renderer Process (src/renderer/ → dist/renderer.js)         │
@@ -59,7 +59,8 @@
 │  ├── hooks/           — useTableSort, useBulkOperation,      │
 │  │                       useListingActions                   │
 │  ├── lib/             — cn() utility (clsx + tailwind-merge) │
-│  └── pages/           — Dashboard, Listings, Items,          │\n│                          Orders, Purchases, Offers, Settings │
+│  └── pages/           — Dashboard, Listings, Items,          │
+│                          Orders, Purchases, Offers, Settings │
 │                                                              │
 │  Communicates with main only via window.api (ElectronAPI)    │
 └──────────────────────────────────────────────────────────────┘
