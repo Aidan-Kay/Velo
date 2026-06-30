@@ -192,6 +192,12 @@
   padding: 1rem;
 }
 
+/* Inactive pages are removed from layout/paint entirely so navigation is
+   instant and off-screen pages don't consume rendering resources. */
+.page-hidden {
+  display: none;
+}
+
 /* ─── Notification highlight animation ──────────────────────────────────── */
 @keyframes notification-highlight {
   0% {

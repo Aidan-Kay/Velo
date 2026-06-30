@@ -321,16 +321,26 @@ app.whenReady().then(async () => {
   state.lastOfferPollTimestamp = loadedOffers.lastPollTimestamp;
   state.notifications = loadedNotifications;
 
-  // One-time migration: legacy photo URLs → local-file:/// protocol
+  // One-time migration: legacy photo URLs → local-file:/// protocol, and
+  // rewrite the item-photos path to the current userData directory. Prior
+  // app names (e.g. "vinted-manager", "ListingWatch") embedded a different
+  // userData folder in the stored paths; the photos now live under the
+  // current app's userData/item-photos.
+  const currentPhotoDir = path.join(app.getPath("userData"), "item-photos").replace(/\\/g, "/");
   let itemsMigrated = false;
   for (const item of state.items) {
     if (item.photos) {
       const migrated = item.photos.map((p) => {
         // Legacy file:// → local-file:///
-        if (p.startsWith("file://")) return p.replace("file://", "local-file://");
+        if (p.startsWith("file://")) p = p.replace("file://", "local-file://");
         // Fix two-slash local-file:// → three-slash local-file:///
         if (p.startsWith("local-file://") && !p.startsWith("local-file:///")) {
-          return p.replace("local-file://", "local-file:///");
+          p = p.replace("local-file://", "local-file:///");
+        }
+        // Rewrite the item-photos path segment to the current userData dir.
+        // Matches any prior userData folder name that precedes /item-photos/.
+        if (p.includes("/item-photos/") && !p.includes(currentPhotoDir)) {
+          p = p.replace(/^local-file:\/\/\/.*?\/item-photos\//, `local-file:///${currentPhotoDir}/`);
         }
         return p;
       });
