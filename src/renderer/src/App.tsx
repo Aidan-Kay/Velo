@@ -1,5 +1,5 @@
 import { TooltipProvider } from "@shared/components/ui/tooltip";
-import React, { Suspense, lazy, useCallback, useEffect, useTransition, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import NotificationBell from "./components/NotificationBell";
 import Sidebar from "./components/Sidebar";
 import { ItemsSyncProvider } from "./context/ItemsSyncContext";
@@ -9,26 +9,18 @@ import { OffersSyncProvider } from "./context/OffersSyncContext";
 import { OrdersSyncProvider } from "./context/OrdersSyncContext";
 import { PurchasesSyncProvider } from "./context/PurchasesSyncContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
+import ActivityLog from "./pages/ActivityLog";
+import Automations from "./pages/Automations";
+import Dashboard from "./pages/Dashboard";
+import Inbox from "./pages/Inbox";
+import Items from "./pages/Items";
+import Listings from "./pages/Listings";
+import Offers from "./pages/Offers";
+import Orders from "./pages/Orders";
+import Purchases from "./pages/Purchases";
+import Settings from "./pages/Settings";
 
-const Dashboard = lazy(() => import("./pages/Dashboard"));
-const Listings = lazy(() => import("./pages/Listings"));
-const Items = lazy(() => import("./pages/Items"));
-const Orders = lazy(() => import("./pages/Orders"));
-const Purchases = lazy(() => import("./pages/Purchases"));
-const Offers = lazy(() => import("./pages/Offers"));
-const Settings = lazy(() => import("./pages/Settings"));
-const ActivityLog = lazy(() => import("./pages/ActivityLog"));
-
-const PageLoadingSpinner: React.FC = () => (
-  <div className="flex items-center justify-center py-16">
-    <svg className="animate-spin h-6 w-6 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-    </svg>
-  </div>
-);
-
-type Page = "dashboard" | "listings" | "items" | "orders" | "purchases" | "offers" | "settings" | "activity";
+type Page = "dashboard" | "listings" | "items" | "orders" | "purchases" | "offers" | "automations" | "inbox" | "settings" | "activity";
 
 const PAGE_LABELS: Record<Page, string> = {
   dashboard: "Dashboard",
@@ -37,26 +29,14 @@ const PAGE_LABELS: Record<Page, string> = {
   orders: "Orders",
   purchases: "Purchases",
   offers: "Offers",
+  automations: "Automations",
+  inbox: "Inbox",
   settings: "Settings",
   activity: "Activity Log",
 };
 
 const AppContent: React.FC = () => {
-  const [displayPage, setDisplayPage] = useState<Page>("dashboard");
   const [page, setPage] = useState<Page>("dashboard");
-  const [isPending, startTransition] = useTransition();
-
-  const navigatePage = useCallback((next: Page) => {
-    setDisplayPage(next);
-  }, []);
-
-  // Defer page content rendering so sidebar paints its active state first
-  useEffect(() => {
-    if (displayPage === page) return;
-    startTransition(() => {
-      setPage(displayPage);
-    });
-  }, [displayPage, page]);
   const [loggedIn, setLoggedIn] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -86,7 +66,7 @@ const AppContent: React.FC = () => {
       await window.api.logout();
       setLoggedIn(false);
       addToast("Logged out", "info");
-      navigatePage("dashboard");
+      setPage("dashboard");
     } catch {
       addToast("Logout failed", "error");
     }
@@ -143,6 +123,7 @@ const AppContent: React.FC = () => {
       o: "orders",
       p: "purchases",
       f: "offers",
+      n: "inbox",
       s: "settings",
       a: "activity",
     };
@@ -163,7 +144,7 @@ const AppContent: React.FC = () => {
       // even when an input is focused (lets the user jump between search bars).
       if (e.key === "/") {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent("app:focus-search", { detail: { page: displayPage } }));
+        window.dispatchEvent(new CustomEvent("app:focus-search", { detail: { page } }));
         return;
       }
 
@@ -172,26 +153,26 @@ const AppContent: React.FC = () => {
       const key = e.key.toLowerCase();
       if (key in PAGE_KEYS) {
         e.preventDefault();
-        setDisplayPage(PAGE_KEYS[key]);
+        setPage(PAGE_KEYS[key]);
         return;
       }
       if (key === "r") {
         e.preventDefault();
-        window.dispatchEvent(new CustomEvent("app:refresh", { detail: { page: displayPage } }));
+        window.dispatchEvent(new CustomEvent("app:refresh", { detail: { page } }));
       }
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [displayPage]);
+  }, [page]);
 
   return (
     <TooltipProvider delay={200}>
-      <NotificationSyncProvider onNavigate={(p) => navigatePage(p as Page)}>
+      <NotificationSyncProvider onNavigate={(p) => setPage(p as Page)}>
         <div className="flex flex-col h-screen overflow-hidden">
-          {/* Custom titlebar drag region — page title centred, controls on right */}
-          <div className="titlebar flex items-center justify-end border-b border-border/50 pr-[140px] relative">
-            <span className="text-sm font-semibold text-foreground select-none absolute left-1/2 -translate-x-1/2">{PAGE_LABELS[displayPage]}</span>
+          {/* Custom titlebar drag region — page title on left, controls on right */}
+          <div className="titlebar flex items-center justify-between border-b border-border/50 pl-4 pr-[140px]">
+            <span className="text-sm font-semibold text-foreground select-none">{PAGE_LABELS[page]}</span>
             <div style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}>
               <NotificationBell />
             </div>
@@ -199,8 +180,8 @@ const AppContent: React.FC = () => {
 
           <div className="flex flex-1 min-h-0">
             <Sidebar
-              currentPage={displayPage}
-              onNavigate={navigatePage}
+              currentPage={page}
+              onNavigate={setPage}
               loggedIn={loggedIn}
               checkingSession={checkingSession}
               loggingIn={loggingIn}
@@ -214,29 +195,39 @@ const AppContent: React.FC = () => {
                   <PurchasesSyncProvider loggedIn={loggedIn}>
                     <OffersSyncProvider loggedIn={loggedIn}>
                       <ItemsSyncProvider>
-                        <Suspense
-                          fallback={
-                            <div className="page-container flex items-center justify-center">
-                              <PageLoadingSpinner />
-                            </div>
-                          }
-                        >
-                          <div className="page-container relative">
-                            {isPending && (
-                              <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
-                                <PageLoadingSpinner />
-                              </div>
-                            )}
-                            {page === "dashboard" && <Dashboard loggedIn={loggedIn} />}
-                            {page === "listings" && <Listings loggedIn={loggedIn} />}
-                            {page === "items" && <Items loggedIn={loggedIn} />}
-                            {page === "orders" && <Orders loggedIn={loggedIn} isActive />}
-                            {page === "purchases" && <Purchases loggedIn={loggedIn} />}
-                            {page === "offers" && <Offers loggedIn={loggedIn} isActive />}
-                            {page === "settings" && <Settings />}
-                            {page === "activity" && <ActivityLog />}
-                          </div>
-                        </Suspense>
+                        {/* All pages stay mounted and laid-out so navigation is instant.
+                          Inactive pages use content-visibility:auto + visibility:hidden
+                          so the browser skips layout/paint entirely for off-screen content. */}
+                        <div className={page === "dashboard" ? "page-container" : "page-container page-hidden"}>
+                          <Dashboard loggedIn={loggedIn} />
+                        </div>
+                        <div className={page === "listings" ? "page-container" : "page-container page-hidden"}>
+                          <Listings loggedIn={loggedIn} />
+                        </div>
+                        <div className={page === "items" ? "page-container" : "page-container page-hidden"}>
+                          <Items loggedIn={loggedIn} />
+                        </div>
+                        <div className={page === "orders" ? "page-container" : "page-container page-hidden"}>
+                          <Orders loggedIn={loggedIn} isActive={page === "orders"} />
+                        </div>
+                        <div className={page === "purchases" ? "page-container" : "page-container page-hidden"}>
+                          <Purchases loggedIn={loggedIn} />
+                        </div>
+                        <div className={page === "offers" ? "page-container" : "page-container page-hidden"}>
+                          <Offers loggedIn={loggedIn} isActive={page === "offers"} />
+                        </div>
+                        <div className={page === "automations" ? "page-container" : "page-container page-hidden"}>
+                          <Automations />
+                        </div>
+                        <div className={page === "inbox" ? "page-container" : "page-container page-hidden"}>
+                          <Inbox loggedIn={loggedIn} />
+                        </div>
+                        <div className={page === "settings" ? "page-container" : "page-container page-hidden"}>
+                          <Settings />
+                        </div>
+                        <div className={page === "activity" ? "page-container" : "page-container page-hidden"}>
+                          <ActivityLog />
+                        </div>
                       </ItemsSyncProvider>
                     </OffersSyncProvider>
                   </PurchasesSyncProvider>
