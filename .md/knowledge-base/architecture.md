@@ -20,8 +20,9 @@
 │  ┌──────┴──────────────────────────────────────────────┐      │
 │  │ ipc-handlers.ts  — thin orchestrator                │      │
 │  │ ipc/auth, listings, orders, purchases, offers,      │      │
-│  │      items, catalog, settings, notifications,       │      │
-│  │      system — domain-grouped ipcMain.handle setup   │      │
+│  │      inbox, items, catalog, settings, notifications,│      │
+│  │      system, logs, price-rules, ai — domain-grouped │      │
+│  │      ipcMain.handle setup                           │      │
 │  ├─────────────────────────────────────────────────────┤      │
 │  │ app-state.ts      — shared mutable state, delta     │      │
 │  │                     computation, persistence side   │      │
@@ -194,6 +195,10 @@ IPC channels are registered by domain modules under `src/main/ipc/` (auth, listi
 | `apply-bulk-price-rule`       | renderer → main | Apply a `{ percentOff, olderThanDays, dryRun? }` rule to cached active listings; returns `{ matched, updated, failed }`                                           |
 | `bulk-price-progress`         | main → renderer | Per-listing progress during a bulk price rule run                                                                                                                 |
 | `ai-generate-listing-draft`   | renderer → main | Generate `{ title, description }` for a saved item via the configured AI provider (uses up to 3 of the item's photos)                                             |
+| `get-inbox-conversations`     | renderer → main | Fetch paginated inbox conversation summaries                                                                                                                      |
+| `get-conversation-detail`     | renderer → main | Fetch full conversation with messages (maps `isOwnMessage` via `client.userId`)                                                                                   |
+| `send-message`                | renderer → main | Post a message to a conversation                                                                                                                                  |
+| `inbox-conversations-delta`   | main → renderer | Push conversation list updates (defined in types/preload but not currently emitted by polling — reserved for future inbox polling)                                |
 
 ## Background Polling
 
@@ -205,7 +210,7 @@ The `PolledResource<T>` helper class encapsulates the timer/in-flight/scheduling
 - **Orders**: polled at the configured interval (default 5 min). Response status is compared with cached orders — transaction detail API is only called for orders whose `statusLabel` has changed (or new orders). Shipping instructions API (`getShippingInstructions`) is called for all newly-enriched orders to obtain courier name and carrier logo even before a label is generated. Journey summary API is also called for orders with shipments to get carrier logo and estimated delivery. Enrichment data (buyer, courier, tracking, shipmentId, shipmentStatus, carrierLogoUrl, estimatedDelivery, bundle info) is persisted with the order cache. New orders generate in-app notifications (suppressed on first poll after startup to avoid flooding).
 - **Purchases**: polled at the configured interval (default 15 min). Fetches buyer-side orders via `GET /my_orders?type=purchased&status=all`, enriches with transaction detail (seller info). Cached to `cached-purchases.json`, delta pushed via `purchases-delta`.
 - **Offers**: polled at the configured interval (default 15 min). Scans inbox conversations updated since last poll timestamp, filters seller-side conversations, extracts `offer_request_message` entities. First run fetches only first inbox page. New offers are merged with existing cache via Map. Auto-accept first evaluates `settings.offerAutomationRules`: a rule matches only when the offer's bundle size exactly matches `itemCount`, the absolute total offer amount meets `minimumOfferAmount`, every offered item title resolves to at least one saved local item via the shared `titleKey()` matcher, and every matched saved item set contains the configured tag. If no automation rule matches, the existing percentage-based auto-accept path runs using the global threshold (or per-item override). Accepted offers are marked `autoAccepted: true` and notified via `offer-auto-accepted`. After auto-accept, an auto-ignore pass mutates `status` to `"ignored"` (local-only, no API call) for any still-pending offer below `autoIgnoreOfferPercent`. Local-only statuses (`"ignored"`, `"countered"`) are preserved across polling merges, yielding only to `"accepted"` / `"cancelled"` from the API. Cached to `cached-offers-received.json`, delta pushed via `offers-delta`. New offers generate in-app notifications (suppressed on first poll after startup).
-- **Stock reduction**: when an order's stage transitions to `"shipped"` during polling (compared against previously cached order stage), the corresponding local item stock is automatically decremented by 1 for each matching item (matched by title). This behaviour is controlled by the `reduceStockOnShipped` setting (default: `true`). Each order is marked with `stockReduced: true` to prevent double-reduction. For bundle orders, each bundle item's stock is reduced individually. Only items with `relistingEnabled !== false` are eligible for automatic relisting.
+- **Stock reduction**: when a new order is first seen during polling (not previously in cache), the corresponding local item stock is automatically decremented by 1 for each matching item (matched by title). This behaviour is controlled by the `reduceStockOnOrdered` setting (default: `true`). Each order is marked with `stockReduced: true` to prevent double-reduction. Cancelled orders are skipped. For bundle orders, each bundle item's stock is reduced individually. Only items with `relistingEnabled !== false` are eligible for automatic relisting.
 - **Stock replenishment**: cancelled orders have a "Replenish Stock" action in the UI that increases matching item stock by 1 and marks the order with `stockReplenished: true` to disable repeated replenishment. The `stockReplenished`, `stockReduced`, and `packed` flags are preserved across polling updates.
 - **Auto-label generation**: when `autoGenerateLabels` is enabled, newly detected orders (not previously in cache) without a label automatically have a shipping label generated. The preferred label type from settings is used, with a fallback via the `label_options` API if the preferred type isn't available for the courier.
 - **Single-item refresh**: `refreshSingleOrder(transactionId)` re-enriches one order (transaction detail + journey summary) and updates the cached array in-place. `refreshSingleListing(listingId)` fetches one listing via the item_upload detail API (`/api/v2/item_upload/items/{id}`) and updates/inserts it in the cached listings, preserving cached view/favourite counts (the item_upload API doesn't return these). Both push the updated array to the renderer.
@@ -320,13 +325,13 @@ A single global `keydown` listener installed in `App.tsx` powers all in-app shor
 
 - Suppresses all shortcuts when the active element is an `<input>`, `<textarea>`, or `[contenteditable]`, **except** `/` (which always preventDefaults and dispatches the focus event so the user can jump between search bars).
 - Ignores any keydown with Ctrl/Meta/Alt modifiers.
-- Letter keys (`d`, `l`, `i`, `o`, `p`, `f`, `a`, `s`) call `setPage(...)` to navigate between pages, while uppercase `L` opens Activity Log.
+- Letter keys (`d`, `l`, `i`, `o`, `p`, `f`, `a`, `s`, `n`) call `setPage(...)` to navigate between pages (`d` Dashboard, `l` Listings, `i` Items, `o` Orders, `p` Purchases, `f` Offers, `a` Activity Log, `s` Settings, `n` Inbox).
 - `/` dispatches a `CustomEvent("app:focus-search", { detail: { page } })` on `window`. The shared `FilterBar` listens for this event and focuses its search input via a container ref, skipping any FilterBar that is inside an element with the `page-hidden` class so only the active page's search bar receives focus.
 - `r` dispatches a `CustomEvent("app:refresh", { detail: { page } })`. Pages opt in via the `useGlobalRefresh(page, handler)` hook (`src/renderer/src/hooks/useGlobalRefresh.ts`), which only fires `handler` when `event.detail.page === page` so hidden pages stay quiet.
 
 ## Page Mounting Strategy
 
-All nine pages (Dashboard, Listings, Items, Orders, Purchases, Offers, Automations, Activity Log, Settings) are rendered via `App.tsx`'s lazy-loaded route switch. The active page is visible inside the shared `page-container`, and page navigation swaps the rendered route while preserving the cross-page sync providers above it.
+All ten pages (Dashboard, Listings, Items, Orders, Purchases, Offers, Automations, Inbox, Activity Log, Settings) are rendered via `App.tsx`'s route switch. The active page is visible inside the shared `page-container`, and page navigation swaps the rendered route while preserving the cross-page sync providers above it.
 
 ## Performance Optimisations
 
