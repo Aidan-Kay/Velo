@@ -39,6 +39,11 @@ const api: ElectronAPI = {
   ignoreOffer: (offerRequestId) => ipcRenderer.invoke("ignore-offer", offerRequestId),
   unignoreOffer: (offerRequestId) => ipcRenderer.invoke("unignore-offer", offerRequestId),
 
+  // ─── Inbox ────────────────────────────────────────────────────────────────
+  getInboxConversations: (page) => ipcRenderer.invoke("get-inbox-conversations", page),
+  getConversationDetail: (conversationId) => ipcRenderer.invoke("get-conversation-detail", conversationId),
+  sendMessage: (conversationId, body) => ipcRenderer.invoke("send-message", conversationId, body),
+
   // ─── Listing Actions ──────────────────────────────────────────────────────
   createListing: (itemData, options) => ipcRenderer.invoke("create-listing", itemData, options),
   publishListing: (id) => ipcRenderer.invoke("publish-listing", id),
@@ -157,6 +162,13 @@ const api: ElectronAPI = {
     ipcRenderer.on("offer-auto-accepted", handler);
     return () => {
       ipcRenderer.off("offer-auto-accepted", handler);
+    };
+  },
+  onInboxConversationsDelta: (callback) => {
+    const handler = (_event: Electron.IpcRendererEvent, data: any) => callback(data);
+    ipcRenderer.on("inbox-conversations-delta", handler);
+    return () => {
+      ipcRenderer.off("inbox-conversations-delta", handler);
     };
   },
   onNotificationsUpdated: (callback) => {

@@ -1,6 +1,7 @@
 import { setupAiIpc } from "./ipc/ai";
 import { setupAuthIpc } from "./ipc/auth";
 import { setupCatalogIpc } from "./ipc/catalog";
+import { setupInboxIpc } from "./ipc/inbox";
 import { setupItemsIpc } from "./ipc/items";
 import { setupListingsIpc } from "./ipc/listings";
 import { setupLogsIpc } from "./ipc/logs";
@@ -26,6 +27,7 @@ export function setupIpc(deps: IpcDeps): void {
   setupOrdersIpc(deps);
   setupPurchasesIpc(deps);
   setupOffersIpc(deps);
+  setupInboxIpc(deps);
   setupItemsIpc(deps);
   setupCatalogIpc(deps);
   setupSettingsIpc(deps);

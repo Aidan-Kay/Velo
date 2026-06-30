@@ -23,9 +23,9 @@ export {
   getMyListings,
   publishListing,
 } from "./listings";
-export { getInbox } from "./messaging";
+export { getInbox, sendMessage } from "./messaging";
 export { acceptOffer, counterOffer, getReceivedOffers, getSellerOfferOptions } from "./offers";
-export { getConversation, getMyOrders, getMyPurchases, getTransactionDetail } from "./orders";
+export { getConversation as getConversationDetail, getConversation, getMyOrders, getMyPurchases, getTransactionDetail } from "./orders";
 export {
   getDefaultShippingAddress,
   getJourneySummary,

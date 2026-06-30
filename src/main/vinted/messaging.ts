@@ -48,3 +48,19 @@ export async function getInbox(
     pagination: response.data?.pagination || {},
   };
 }
+
+export async function sendMessage(conversationId: number, body: string, domain: string = DEFAULT_DOMAIN): Promise<{ success: boolean }> {
+  const client = getClient(domain);
+  if (!client.isLoggedIn || !client.userId) {
+    throw new Error("Not logged in");
+  }
+
+  const apiUrl = `https://${client.domain}${VINTED_API}/conversations/${conversationId}/messages`;
+  const response = await client.post(apiUrl, { body });
+
+  if (![200, 201, 202].includes(response.status)) {
+    throw new Error(`Send message failed (status ${response.status})`);
+  }
+
+  return { success: true };
+}

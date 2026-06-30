@@ -5,6 +5,8 @@ import {
   ChartBarIcon,
   ClipboardDocumentListIcon,
   Cog6ToothIcon,
+  SparklesIcon,
+  ChatBubbleLeftRightIcon,
   ShoppingBagIcon,
   ShoppingCartIcon,
   TagIcon,
@@ -12,7 +14,7 @@ import {
 import { Button } from "@shared/components/ui/button";
 import React from "react";
 
-type Page = "dashboard" | "listings" | "items" | "orders" | "purchases" | "offers" | "settings" | "activity";
+type Page = "dashboard" | "listings" | "items" | "orders" | "purchases" | "offers" | "automations" | "inbox" | "settings" | "activity";
 
 interface SidebarProps {
   currentPage: Page;
@@ -54,6 +56,16 @@ const navItems: { id: Page; label: string; icon: React.JSX.Element }[] = [
     id: "purchases",
     label: "Purchases",
     icon: <ShoppingBagIcon className="w-5 h-5" />,
+  },
+  {
+    id: "automations",
+    label: "Automations",
+    icon: <SparklesIcon className="w-5 h-5" />,
+  },
+  {
+    id: "inbox",
+    label: "Inbox",
+    icon: <ChatBubbleLeftRightIcon className="w-5 h-5" />,
   },
   {
     id: "activity",

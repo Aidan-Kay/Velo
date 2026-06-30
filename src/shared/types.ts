@@ -459,6 +459,45 @@ export interface SellerOfferOptions {
   currency: string;
 }
 
+export interface InboxConversationSummary {
+  id: number;
+  title: string;
+  updatedAt: string;
+  unread: boolean;
+  oppositeUser: {
+    id: number | null;
+    login: string;
+    avatarUrl: string | null;
+  };
+}
+
+export interface ConversationMessage {
+  id: number;
+  entityType: string;
+  body: string | null;
+  createdAt: string;
+  fromUserId: number | null;
+  isOwnMessage: boolean;
+}
+
+export interface ConversationDetail {
+  id: number;
+  oppositeUser: {
+    id: number | null;
+    login: string;
+    avatarUrl: string | null;
+    profileUrl: string | null;
+  };
+  itemTitle: string | null;
+  itemThumbnail: string | null;
+  messages: ConversationMessage[];
+}
+
+export interface InboxDelta {
+  upserted: InboxConversationSummary[];
+  removedIds: number[];
+}
+
 // ─── App Notification ─────────────────────────────────────────────────────────
 
 export interface AppNotification {
@@ -557,6 +596,11 @@ export interface ElectronAPI {
   ignoreOffer: (offerRequestId: number) => Promise<{ success: boolean }>;
   unignoreOffer: (offerRequestId: number) => Promise<{ success: boolean }>;
 
+  // Inbox
+  getInboxConversations: (page?: number) => Promise<{ conversations: InboxConversationSummary[]; pagination: Pagination }>;
+  getConversationDetail: (conversationId: number) => Promise<ConversationDetail>;
+  sendMessage: (conversationId: number, body: string) => Promise<{ success: boolean }>;
+
   // Listing actions
   createListing: (itemData: Partial<LocalItem>, options?: { asDraft?: boolean }) => Promise<Record<string, unknown>>;
   publishListing: (id: number) => Promise<Record<string, unknown>>;
@@ -609,6 +653,7 @@ export interface ElectronAPI {
   onPurchasesDelta: (callback: (delta: PurchaseDelta) => void) => () => void;
   onOffersDelta: (callback: (delta: OfferDelta) => void) => () => void;
   onOfferAutoAccepted: (callback: (offer: ReceivedOffer) => void) => () => void;
+  onInboxConversationsDelta: (callback: (delta: InboxDelta) => void) => () => void;
   onListingCreationProgress: (callback: (data: { step: string; current: number; total: number }) => void) => () => void;
   onLabelGenerationProgress: (callback: (data: { transactionId: number; step: string }) => void) => () => void;
   onNotificationsUpdated: (callback: (notifications: AppNotification[]) => void) => () => void;
