@@ -7,9 +7,13 @@ src/renderer/styles/style.css
 .DS_Store
 Thumbs.db
 
-api-example-responses/
-
-.md/
 AGENTS.md
 CLAUDE.md
 .github/
+
+.md/*
+!.md/knowledge-base/
+.md/knowledge-base/*
+!.md/knowledge-base/architecture.md
+!.md/knowledge-base/file-reference.md
+!.md/knowledge-base/overview.md
