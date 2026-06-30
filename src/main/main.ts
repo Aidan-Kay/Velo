@@ -33,9 +33,9 @@ log.transports.file.maxSize = 5 * 1024 * 1024;
 Object.assign(console, log.functions);
 
 // ─── App Identity ─────────────────────────────────────────────────────────────
-app.name = "VintedManager";
+app.name = "Velo";
 if (process.platform === "win32") {
-  app.setAppUserModelId("VintedManager");
+  app.setAppUserModelId("Velo");
 }
 
 // ─── Chromium Stability ───────────────────────────────────────────────────────
@@ -181,11 +181,11 @@ function createTray(): void {
     return;
   }
   tray = new Tray(iconPath);
-  tray.setToolTip("Vinted Manager");
+  tray.setToolTip("Velo");
 
   const contextMenu = Menu.buildFromTemplate([
     {
-      label: "Open Vinted Manager",
+      label: "Open Velo",
       click: () => {
         if (mainWindow) {
           if (mainWindow.isMinimized()) mainWindow.restore();

@@ -1,4 +1,4 @@
-# Vinted Manager — Architecture
+# Velo — Architecture
 
 ## Process Model
 

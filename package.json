@@ -1,7 +1,7 @@
 {
-  "name": "vinted-manager",
+  "name": "velo",
   "version": "1.0.0",
-  "description": "Vinted Manager — account management tool for Vinted sellers",
+  "description": "Velo — account management tool for Vinted sellers",
   "main": "./out/main/main.js",
   "scripts": {
     "start": "electron-vite preview",
@@ -57,8 +57,8 @@
     "vite": "^8.0.3"
   },
   "build": {
-    "appId": "com.vintedmanager.app",
-    "productName": "VintedManager",
+    "appId": "com.velo.app",
+    "productName": "Velo",
     "files": [
       "out/**/*",
       "!**/.vscode/*",
