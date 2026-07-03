@@ -45,7 +45,7 @@ interface CropConfig {
 
 /** Courier crop configs — derived from reference cropped PDFs. */
 const COURIER_CROPS: Record<string, CropConfig> = {
-  "inpost-locker": { x: 102, y: 10.89, width: 417, height: 295, rotation: -90 },
+  "inpost-locker": { x: 150, y: 10, width: 421, height: 297, rotation: -90 },
   "inpost-home": { x: 150, y: 10, width: 297, height: 421 },
   evri: { x: 17.15, y: 394.64, width: 290, height: 425.25 },
 };
