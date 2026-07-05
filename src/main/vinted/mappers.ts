@@ -289,6 +289,7 @@ export function deriveOrderStage(statusStr?: string): OrderStage {
   const s = statusStr.toLowerCase();
   if (s.includes("cancelled")) return "cancelled";
   if (s.includes("payment successful")) return "payment_successful";
+  if (s.includes("label ordered")) return "label_ordered";
   if (s.includes("label sent")) return "label_sent";
   if (s.includes("sending label failed")) return "label_failed";
   if (s.includes("on its way")) return "shipped";

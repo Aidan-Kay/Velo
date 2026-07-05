@@ -51,6 +51,7 @@ const STATUS_BADGE: Record<string, BadgeProps["variant"]> = {
 
 const STAGE_LABELS: Record<string, string> = {
   payment_successful: "payment successful",
+  label_ordered: "label ordered",
   label_sent: "label sent",
   label_failed: "label failed",
   shipped: "shipped",
@@ -63,6 +64,7 @@ const STAGE_LABELS: Record<string, string> = {
 
 const STAGE_BADGE: Record<string, BadgeProps["variant"]> = {
   payment_successful: "waiting",
+  label_ordered: "waiting",
   label_sent: "label-sent",
   label_failed: "label-failed",
   shipped: "shipped",
@@ -332,7 +334,7 @@ const OrderRow = React.memo<OrderRowProps>(
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent className="w-auto min-w-max" align="end">
-                  {order.shipmentId && (order.shipmentStatus ?? 0) >= SHIPMENT_STATUS.LABEL_GENERATED && (
+                  {order.shipmentId && (order.shipmentStatus ?? 0) >= SHIPMENT_STATUS.LABEL_ORDERED && (
                     <>
                       <DropdownMenuItem onClick={() => onPrintLabel(order)} disabled={isPrinting}>
                         <PrinterIcon className="w-4 h-4" />

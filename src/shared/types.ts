@@ -68,6 +68,7 @@ export interface LocalItem {
 export type OrderStatus = "needs_action" | "waiting" | "complete";
 export type OrderStage =
   | "payment_successful"
+  | "label_ordered"
   | "label_sent"
   | "label_failed"
   | "shipped"
@@ -356,6 +357,7 @@ export interface AiListingDraft {
 
 export const SHIPMENT_STATUS = {
   NO_LABEL: 1,
+  LABEL_ORDERED: 220,
   LABEL_GENERATED: 230,
   IN_TRANSIT: 300,
   DELIVERED: 400,

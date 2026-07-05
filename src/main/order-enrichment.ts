@@ -1,5 +1,6 @@
 import type { JourneySummaryResult, Order, Purchase, TransactionDetail } from "../shared/types";
 import * as vintedApi from "./vinted/api";
+import { deriveOrderStage } from "./vinted/mappers";
 
 /**
  * Shared transaction enrichment for both seller-side orders and buyer-side
@@ -133,6 +134,7 @@ export async function enrichOrder(order: Order, domain: string): Promise<Order> 
 
   return {
     ...order,
+    orderStatus: order.statusLabel ? deriveOrderStage(order.statusLabel) : order.orderStatus,
     buyerId: buyer.id,
     buyerUsername: buyer.username,
     buyerAvatar: buyer.avatar,
@@ -177,6 +179,7 @@ export async function enrichPurchase(purchase: Purchase, domain: string): Promis
 
   return {
     ...purchase,
+    orderStatus: purchase.statusLabel ? deriveOrderStage(purchase.statusLabel) : purchase.orderStatus,
     sellerId: seller.id,
     sellerUsername: seller.username,
     sellerAvatar: seller.avatar,
